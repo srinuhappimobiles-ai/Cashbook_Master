@@ -18,14 +18,14 @@ st.markdown("""
 
 st.markdown('<div class="header-style">🏢 HAPPI MOBILES - HEAD OFFICE MASTER CASHBOOK AUTOMATION</div>', unsafe_allow_html=True)
 
-# Master Store List (107 Stores)
-BRANCH_MASTER = [
+# Default Master Store List extracted from official Cashbook Report
+DEFAULT_BRANCHES = [
     {"CODE": "ADBD", "BRANCH": "ADILABAD"}, {"CODE": "AMP", "BRANCH": "AMALAPURAM"},
     {"CODE": "AMPT", "BRANCH": "AMEERPET"}, {"CODE": "ANTP", "BRANCH": "ANANTAPUR"},
     {"CODE": "ARMU", "BRANCH": "ARMOOR"}, {"CODE": "ATMKR", "BRANCH": "ATMAKUR"},
     {"CODE": "BDHN", "BRANCH": "BODHAN"}, {"CODE": "BDPL", "BRANCH": "BODUPPAL"},
     {"CODE": "BG", "BRANCH": "BHUVANAGIRI"}, {"CODE": "BVRM", "BRANCH": "BHIMAVARAM"},
-    {"CODE": "CHND", "BRANCH": "CHANDANAGAR"}, {"CODE": "CLX", "BRANCH": "CHIRALA"},
+    {"CODE": "CHND", "BRANCH": "CHANDANAGAR"}, {"CODE": "CHNT", "BRANCH": "CHINTAL"},
     {"CODE": "DBGS", "BRANCH": "DABAGARDENS"}, {"CODE": "DBGS-2", "BRANCH": "DABAGARDENS-2"},
     {"CODE": "DVKD", "BRANCH": "DEVARAKONDA"}, {"CODE": "DVRM", "BRANCH": "DHARMAVRAM"},
     {"CODE": "ECIL", "BRANCH": "ECIL"}, {"CODE": "ELR", "BRANCH": "ELURU"},
@@ -76,6 +76,34 @@ BRANCH_MASTER = [
     {"CODE": "ZB", "BRANCH": "ZAHEERABAD"}
 ]
 
+# Initialize Session State for dynamic store management
+if "branch_list" not in st.session_state:
+    st.session_state.branch_list = sorted(DEFAULT_BRANCHES, key=lambda x: x["BRANCH"].upper())
+
+# Section: Add New Store dynamically
+with st.expander("➕ Add New Store to Master"):
+    c_add1, c_add2, c_add3 = st.columns([2, 3, 2])
+    with c_add1:
+        new_code = st.text_input("Store Code (e.g. MCHL)", key="new_code_input").strip().upper()
+    with c_add2:
+        new_branch = st.text_input("Store Name (e.g. MEDCHAL)", key="new_branch_input").strip().upper()
+    with c_add3:
+        st.write("")
+        st.write("")
+        if st.button("Add Store", use_container_width=True):
+            if new_code and new_branch:
+                existing_branches = [b["BRANCH"].upper() for b in st.session_state.branch_list]
+                if new_branch in existing_branches:
+                    st.warning(f"Store '{new_branch}' already exists!")
+                else:
+                    st.session_state.branch_list.append({"CODE": new_code, "BRANCH": new_branch})
+                    # Sort alphabetically by Branch Name
+                    st.session_state.branch_list = sorted(st.session_state.branch_list, key=lambda x: x["BRANCH"].upper())
+                    st.success(f"✅ Added '{new_branch}' successfully in alphabetical order!")
+                    st.rerun()
+            else:
+                st.error("Please enter both Store Code and Store Name.")
+
 # Load AI OCR reader model
 @st.cache_resource
 def load_ocr():
@@ -107,7 +135,6 @@ def format_excel_formula(num_list):
 def normalize_name(s):
     if not s:
         return ""
-    # Remove special chars, spaces, and make uppercase
     return re.sub(r"[^A-Za-z0-9]", "", str(s)).upper()
 
 # File upload columns
@@ -128,7 +155,6 @@ if ho_dump_file:
         else:
             df_dump = pd.read_excel(ho_dump_file)
 
-        # Identify Branch column and Balance column
         branch_col = None
         bal_col = None
         for col in df_dump.columns:
@@ -138,13 +164,11 @@ if ho_dump_file:
             elif "balance" in c_low or "opening" in c_low or "dr" in c_low or "amount" in c_low:
                 bal_col = col
 
-        # Fallback to column indices if not named explicitly
         if branch_col is None:
             branch_col = df_dump.columns[0]
         if bal_col is None:
             bal_col = df_dump.columns[1] if len(df_dump.columns) > 1 else df_dump.columns[0]
 
-        # Build normalized dictionary from HO Dump
         dump_dict = {}
         for idx, row in df_dump.iterrows():
             b_val = normalize_name(row[branch_col])
@@ -153,8 +177,7 @@ if ho_dump_file:
             if b_val and clean_amt is not None:
                 dump_dict[b_val] = clean_amt
 
-        # Map to 107 Master branches strictly
-        for b in BRANCH_MASTER:
+        for b in st.session_state.branch_list:
             b_norm = normalize_name(b["BRANCH"])
             b_code_norm = normalize_name(b["CODE"])
 
@@ -162,12 +185,6 @@ if ho_dump_file:
                 ho_opening_balances[b["BRANCH"]] = dump_dict[b_norm]
             elif b_code_norm in dump_dict:
                 ho_opening_balances[b["BRANCH"]] = dump_dict[b_code_norm]
-            else:
-                # Handle edge cases like S.R.NAGAR vs SRNAGAR, VIJAYAWADA 1 vs VIJAYAWADA1
-                for k, v in dump_dict.items():
-                    if k == b_norm or k == b_code_norm:
-                        ho_opening_balances[b["BRANCH"]] = v
-                        break
 
         st.success(f"✅ HO Dump Processed: {len(ho_opening_balances)} stores Dr Balance mapped perfectly!")
     except Exception as e:
@@ -187,7 +204,7 @@ if uploaded_files:
             full_text = " ".join([r[1] for r in ocr_results]).lower()
 
             matched_branch = None
-            for b in BRANCH_MASTER:
+            for b in st.session_state.branch_list:
                 b_name_clean = b["BRANCH"].lower().replace(" ", "").replace("-", "")
                 b_code_clean = b["CODE"].lower().replace("-", "")
                 file_clean = file.name.lower().replace(" ", "").replace("-", "").replace("_", "")
@@ -244,13 +261,13 @@ if uploaded_files:
                             denom_val = val
                             break
 
-                # Map line items in the Left Table
+                # Map line items in Left Table
                 left_text = " ".join([i["text"] for i in left_items]).lower()
                 
                 if not any(x in left_text for x in ["closing", "deposit", "diffrence", "difference", "total approval", "excess", "short", "approvals & sale", "add ins", "addins", "cash book"]):
                     amt = None
                     for i in left_items:
-                        if i["x"] > width * 0.50:  # Value strictly in 3rd column (AMOUNT)
+                        if i["x"] > width * 0.50:
                             val = extract_number(i["text"])
                             if val is not None and val > 0:
                                 amt = val
@@ -282,13 +299,12 @@ if uploaded_files:
                 "(KSP)'Sir's Approvals": format_excel_formula(ksp_approvals)
             }
 
-# Build Master DataFrame
+# Build Master DataFrame with 1-based sequential serial numbers
 final_rows = []
-for idx, b in enumerate(BRANCH_MASTER, start=1):
+for idx, b in enumerate(st.session_state.branch_list, start=1):
     b_name = b["BRANCH"]
     d = store_data_map.get(b_name, {})
     
-    # Opening balance mapped directly from HO Dump file
     opening_bal = ho_opening_balances.get(b_name, "")
     
     final_rows.append({
@@ -313,7 +329,7 @@ for idx, b in enumerate(BRANCH_MASTER, start=1):
 df_master = pd.DataFrame(final_rows)
 
 # Interactive Editable Table
-st.subheader("📋 Head Office Master Cashbook (Editable)")
+st.subheader(f"📋 Head Office Master Cashbook ({len(st.session_state.branch_list)} Stores)")
 st.info("💡 **Note:** You can double-click any cell to edit values or type manual entries like DEPOSIT, AddinGS, and REMARKS directly.")
 
 edited_df = st.data_editor(
