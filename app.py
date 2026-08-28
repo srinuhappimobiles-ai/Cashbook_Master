@@ -100,12 +100,48 @@ def format_excel_formula(num_list):
         return num_list[0]
     return "=" + "+".join([str(x) for x in num_list])
 
-uploaded_files = st.file_uploader("📥 Select All Store Cashbook Screenshots", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
+col1, col2 = st.columns(2)
 
+with col1:
+    ho_dump_file = st.file_uploader("📂 1. Upload HO Apex Dr Balance Dump File (Excel / CSV)", type=["xlsx", "xls", "csv"])
+
+with col2:
+    uploaded_files = st.file_uploader("📥 2. Select Store Cashbook Screenshots", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
+
+# 1. Process HO Dr Balance Dump
+ho_opening_balances = {}
+if ho_dump_file:
+    try:
+        if ho_dump_file.name.endswith(".csv"):
+            df_dump = pd.read_csv(ho_dump_file)
+        else:
+            df_dump = pd.read_excel(ho_dump_file)
+
+        # Match Branch codes/names in the HO dump
+        dump_text_cols = df_dump.astype(str)
+        for b in BRANCH_MASTER:
+            b_code = b["CODE"].lower()
+            b_branch = b["BRANCH"].lower().replace(" ", "")
+            
+            for idx, row in df_dump.iterrows():
+                row_str = " ".join(row.astype(str)).lower().replace(" ", "")
+                if b_code in row_str or b_branch in row_str:
+                    # Find first numeric amount in the row representing the Dr balance
+                    for val in row:
+                        amt = extract_number(val)
+                        if amt is not None and amt > 0:
+                            ho_opening_balances[b["BRANCH"]] = amt
+                            break
+                    break
+        st.success(f"✅ HO Dump Processed: {len(ho_opening_balances)} stores Dr Balance mapped successfully!")
+    except Exception as e:
+        st.error(f"Error reading HO Dump file: {e}")
+
+# 2. Process Store Screenshots (Denomination, Approvals, Finance, SR, Edits)
 store_data_map = {}
 
 if uploaded_files:
-    with st.spinner("Processing screenshots and extracting data..."):
+    with st.spinner("Processing screenshots and mapping data..."):
         for file in uploaded_files:
             image = Image.open(file)
             img_np = np.array(image)
@@ -153,7 +189,6 @@ if uploaded_files:
             for r in rows:
                 r["items"].sort(key=lambda item: item["x"])
 
-            op_val = ""
             denom_val = ""
             pending_apprvls = []
             finance_amnt = []
@@ -165,15 +200,7 @@ if uploaded_files:
                 left_items = [i for i in r["items"] if i["x"] <= width * 0.68]
                 right_items = [i for i in r["items"] if i["x"] > width * 0.68]
 
-                # 1. Opening Balance
-                if any("closing" in i["text"].lower() or "apx" in i["text"].lower() for i in left_items):
-                    for i in left_items:
-                        if i["x"] > width * 0.50:
-                            val = extract_number(i["text"])
-                            if val is not None and val > 0:
-                                op_val = val
-
-                # 2. Denomination Total
+                # Denomination Total
                 if any("total" in i["text"].lower() for i in right_items):
                     for i in reversed(right_items):
                         val = extract_number(i["text"])
@@ -181,7 +208,7 @@ if uploaded_files:
                             denom_val = val
                             break
 
-                # 3. Line items
+                # Line Items in Left Table
                 left_text = " ".join([i["text"] for i in left_items]).lower()
                 
                 if not any(x in left_text for x in ["closing", "deposit", "diffrence", "difference", "total approval", "excess", "short", "approvals & sale", "add ins", "addins", "cash book"]):
@@ -206,7 +233,6 @@ if uploaded_files:
                             edits_list.append(amt)
 
             store_data_map[matched_branch] = {
-                "OPENING BALANCE": op_val,
                 "DENOMINATION": denom_val,
                 "PENDING APPRVLS": format_excel_formula(pending_apprvls),
                 "FINANCE AMNT": format_excel_formula(finance_amnt),
@@ -215,17 +241,20 @@ if uploaded_files:
                 "(KSP)'Sir's Approvals": format_excel_formula(ksp_approvals)
             }
 
-# Build Master DataFrame
+# Construct Final Master Table
 final_rows = []
 for idx, b in enumerate(BRANCH_MASTER, start=1):
     b_name = b["BRANCH"]
     d = store_data_map.get(b_name, {})
     
+    # Priority for Opening Balance: HO Dump File > Manual Edit
+    opening_bal = ho_opening_balances.get(b_name, "")
+    
     final_rows.append({
         "Sl.No.": idx,
         "CODE": b["CODE"],
         "BRANCH": b["BRANCH"],
-        "OPENING BALANCE": str(d.get("OPENING BALANCE", "")),
+        "OPENING BALANCE": str(opening_bal),
         "DEPOSIT": "",
         "DENOMINATION": str(d.get("DENOMINATION", "")),
         "AddinGS": "",
@@ -245,16 +274,14 @@ df_master = pd.DataFrame(final_rows)
 st.subheader("📋 Head Office Master Cashbook (Editable)")
 st.info("💡 **సూచన:** మీరు కింద కనిపిస్తున్న టేబుల్‌లోని ఏ సెల్‌నైనా డబుల్ క్లిక్ చేసి మార్చవచ్చు లేదా కొత్త విలువలను మాన్యువల్‌గా ఎంటర్ చేయవచ్చు.")
 
-# Interactive Editable Table
 edited_df = st.data_editor(
     df_master,
     use_container_width=True,
     height=550,
-    disabled=["Sl.No.", "CODE", "BRANCH"], # Store Details locked, others editable
+    disabled=["Sl.No.", "CODE", "BRANCH"],
     num_rows="fixed"
 )
 
-# Export Edited Data to Excel
 output = io.BytesIO()
 with pd.ExcelWriter(output, engine='openpyxl') as writer:
     edited_df.to_excel(writer, index=False, sheet_name='MASTER REPORT')
