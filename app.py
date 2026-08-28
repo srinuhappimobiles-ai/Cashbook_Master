@@ -165,7 +165,7 @@ with col1:
 with col2:
     uploaded_files = st.file_uploader("📥 2. Select Store Cashbook Screenshots", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
 
-# 1. Process Head Office Dr Balance Dump file (Save to Permanent Disk DB)
+# 1. Process Head Office Dr Balance Dump file (Instant Update)
 if ho_dump_file:
     try:
         if ho_dump_file.name.endswith(".csv"):
@@ -195,23 +195,37 @@ if ho_dump_file:
             if b_val and clean_amt is not None:
                 dump_dict[b_val] = clean_amt
 
+        updated_count = 0
         for b in db["branches"]:
             b_norm = normalize_name(b["BRANCH"])
             b_code_norm = normalize_name(b["CODE"])
 
             if b_norm in dump_dict:
                 db["ho_balances"][b["BRANCH"]] = dump_dict[b_norm]
+                # Also sync into manual_edits so it appears immediately on table
+                if b["BRANCH"] not in db["manual_edits"]:
+                    db["manual_edits"][b["BRANCH"]] = {}
+                db["manual_edits"][b["BRANCH"]]["OPENING BALANCE"] = str(dump_dict[b_norm])
+                updated_count += 1
             elif b_code_norm in dump_dict:
                 db["ho_balances"][b["BRANCH"]] = dump_dict[b_code_norm]
+                if b["BRANCH"] not in db["manual_edits"]:
+                    db["manual_edits"][b["BRANCH"]] = {}
+                db["manual_edits"][b["BRANCH"]]["OPENING BALANCE"] = str(dump_dict[b_code_norm])
+                updated_count += 1
 
         save_db(db)
-        st.success(f"✅ HO Dump Stored Permanently: {len(db['ho_balances'])} stores saved!")
+        # Rerun once upon file upload to populate table immediately
+        if "dump_processed" not in st.session_state or st.session_state.dump_processed != ho_dump_file.name:
+            st.session_state.dump_processed = ho_dump_file.name
+            st.rerun()
+
     except Exception as e:
         st.error(f"Error reading HO Dump file: {e}")
 
-# 2. Process Store Screenshots (Save to Permanent Disk DB)
+# 2. Process Store Screenshots (Instant Save & Update)
 if uploaded_files:
-    with st.spinner("Processing screenshots and permanently saving extracted data..."):
+    with st.spinner("Processing screenshots and mapping data..."):
         for file in uploaded_files:
             image = Image.open(file)
             img_np = np.array(image)
@@ -375,7 +389,7 @@ for idx, row in edited_df.iterrows():
 save_db(db)
 
 # Export and Reset options
-c_down, c_reset = st.columns([4, 1])
+c_down, c_reset = st.columns([4, 1.5])
 
 with c_down:
     output = io.BytesIO()
@@ -392,8 +406,12 @@ with c_down:
     )
 
 with c_reset:
-    if st.button("🗑️ Reset / Clear All Data", use_container_width=True):
-        if os.path.exists(DB_FILE):
-            os.remove(DB_FILE)
-        st.success("All data cleared successfully!")
+    if st.button("🗑️ Clear Dr Balances Only", use_container_width=True):
+        db["ho_balances"] = {}
+        for b_name in db["manual_edits"]:
+            db["manual_edits"][b_name]["OPENING BALANCE"] = ""
+        save_db(db)
+        if "dump_processed" in st.session_state:
+            del st.session_state["dump_processed"]
+        st.success("Dr Balances cleared! Other data is safe.")
         st.rerun()
