@@ -83,7 +83,6 @@ def load_ocr():
 
 reader = load_ocr()
 
-# Helper function to extract numeric values while ignoring date formats
 def extract_number(text_val):
     if not text_val:
         return None
@@ -98,13 +97,18 @@ def extract_number(text_val):
             return None
     return None
 
-# Helper function to format multiple numbers as Excel formula (=500+300)
 def format_excel_formula(num_list):
     if not num_list:
         return ""
     if len(num_list) == 1:
         return num_list[0]
     return "=" + "+".join([str(x) for x in num_list])
+
+def normalize_name(s):
+    if not s:
+        return ""
+    # Remove special chars, spaces, and make uppercase
+    return re.sub(r"[^A-Za-z0-9]", "", str(s)).upper()
 
 # File upload columns
 col1, col2 = st.columns(2)
@@ -115,7 +119,7 @@ with col1:
 with col2:
     uploaded_files = st.file_uploader("📥 2. Select Store Cashbook Screenshots", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
 
-# 1. Process Head Office Dr Balance Dump file
+# 1. Process Head Office Dr Balance Dump file accurately
 ho_opening_balances = {}
 if ho_dump_file:
     try:
@@ -124,20 +128,48 @@ if ho_dump_file:
         else:
             df_dump = pd.read_excel(ho_dump_file)
 
+        # Identify Branch column and Balance column
+        branch_col = None
+        bal_col = None
+        for col in df_dump.columns:
+            c_low = str(col).lower()
+            if "branch" in c_low or "store" in c_low or "name" in c_low:
+                branch_col = col
+            elif "balance" in c_low or "opening" in c_low or "dr" in c_low or "amount" in c_low:
+                bal_col = col
+
+        # Fallback to column indices if not named explicitly
+        if branch_col is None:
+            branch_col = df_dump.columns[0]
+        if bal_col is None:
+            bal_col = df_dump.columns[1] if len(df_dump.columns) > 1 else df_dump.columns[0]
+
+        # Build normalized dictionary from HO Dump
+        dump_dict = {}
+        for idx, row in df_dump.iterrows():
+            b_val = normalize_name(row[branch_col])
+            raw_amt = row[bal_col]
+            clean_amt = extract_number(raw_amt)
+            if b_val and clean_amt is not None:
+                dump_dict[b_val] = clean_amt
+
+        # Map to 107 Master branches strictly
         for b in BRANCH_MASTER:
-            b_code = b["CODE"].lower()
-            b_branch = b["BRANCH"].lower().replace(" ", "")
-            
-            for idx, row in df_dump.iterrows():
-                row_str = " ".join(row.astype(str)).lower().replace(" ", "")
-                if b_code in row_str or b_branch in row_str:
-                    for val in row:
-                        amt = extract_number(val)
-                        if amt is not None and amt > 0:
-                            ho_opening_balances[b["BRANCH"]] = amt
-                            break
-                    break
-        st.success(f"✅ HO Dump Processed: {len(ho_opening_balances)} stores Dr Balance mapped successfully!")
+            b_norm = normalize_name(b["BRANCH"])
+            b_code_norm = normalize_name(b["CODE"])
+
+            if b_norm in dump_dict:
+                ho_opening_balances[b["BRANCH"]] = dump_dict[b_norm]
+            elif b_code_norm in dump_dict:
+                ho_opening_balances[b["BRANCH"]] = dump_dict[b_code_norm]
+            else:
+                # Handle edge cases like S.R.NAGAR vs SRNAGAR, VIJAYAWADA 1 vs VIJAYAWADA1
+                for k, v in dump_dict.items():
+                    if k == b_norm or k == b_code_norm:
+                        ho_opening_balances[b["BRANCH"]] = v
+                        break
+
+        st.success(f"✅ HO Dump Processed: {len(ho_opening_balances)} stores Dr Balance mapped perfectly!")
     except Exception as e:
         st.error(f"Error reading HO Dump file: {e}")
 
@@ -154,7 +186,6 @@ if uploaded_files:
             ocr_results = reader.readtext(img_np)
             full_text = " ".join([r[1] for r in ocr_results]).lower()
 
-            # Match Branch Name or Branch Code
             matched_branch = None
             for b in BRANCH_MASTER:
                 b_name_clean = b["BRANCH"].lower().replace(" ", "").replace("-", "")
@@ -172,14 +203,12 @@ if uploaded_files:
             if not matched_branch:
                 continue
 
-            # Collect detected bounding boxes
             boxes = []
             for bbox, text, conf in ocr_results:
                 cx = (bbox[0][0] + bbox[1][0]) / 2
                 cy = (bbox[0][1] + bbox[2][1]) / 2
                 boxes.append({"x": cx, "y": cy, "text": text.strip()})
 
-            # Cluster boxes into rows by Y-coordinate
             boxes.sort(key=lambda b: b["y"])
             rows = []
             for b in boxes:
@@ -204,7 +233,6 @@ if uploaded_files:
             ksp_approvals = []
 
             for r in rows:
-                # Separate Left Table vs Right Denomination Table
                 left_items = [i for i in r["items"] if i["x"] <= width * 0.68]
                 right_items = [i for i in r["items"] if i["x"] > width * 0.68]
 
