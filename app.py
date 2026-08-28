@@ -5,11 +5,12 @@ import numpy as np
 import easyocr
 import re
 import io
+import json
+import os
 
 # Page configuration
 st.set_page_config(page_title="Happi Cashbook Master", layout="wide")
 
-# Custom UI styling
 st.markdown("""
     <style>
     .header-style { font-size: 24px; font-weight: bold; color: #0E4C92; margin-bottom: 15px; }
@@ -18,7 +19,8 @@ st.markdown("""
 
 st.markdown('<div class="header-style">🏢 HAPPI MOBILES - HEAD OFFICE MASTER CASHBOOK AUTOMATION</div>', unsafe_allow_html=True)
 
-# Default Master Store List
+DB_FILE = "cashbook_master_db.json"
+
 DEFAULT_BRANCHES = [
     {"CODE": "ADBD", "BRANCH": "ADILABAD"}, {"CODE": "AMP", "BRANCH": "AMALAPURAM"},
     {"CODE": "AMPT", "BRANCH": "AMEERPET"}, {"CODE": "ANTP", "BRANCH": "ANANTAPUR"},
@@ -76,15 +78,26 @@ DEFAULT_BRANCHES = [
     {"CODE": "ZB", "BRANCH": "ZAHEERABAD"}
 ]
 
-# Initialize Persistent Session States
-if "branch_list" not in st.session_state:
-    st.session_state.branch_list = sorted(DEFAULT_BRANCHES, key=lambda x: x["BRANCH"].upper())
+# Permanent Database Helpers
+def load_db():
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, "r") as f:
+                return json.load(f)
+        except:
+            pass
+    return {
+        "branches": sorted(DEFAULT_BRANCHES, key=lambda x: x["BRANCH"].upper()),
+        "ho_balances": {},
+        "store_data": {},
+        "manual_edits": {}
+    }
 
-if "persistent_ho_balances" not in st.session_state:
-    st.session_state.persistent_ho_balances = {}
+def save_db(data):
+    with open(DB_FILE, "w") as f:
+        json.dump(data, f, indent=2)
 
-if "persistent_store_data" not in st.session_state:
-    st.session_state.persistent_store_data = {}
+db = load_db()
 
 # Section: Add New Store dynamically
 with st.expander("➕ Add New Store to Master"):
@@ -98,12 +111,13 @@ with st.expander("➕ Add New Store to Master"):
         st.write("")
         if st.button("Add Store", use_container_width=True):
             if new_code and new_branch:
-                existing_branches = [b["BRANCH"].upper() for b in st.session_state.branch_list]
-                if new_branch in existing_branches:
+                existing = [b["BRANCH"].upper() for b in db["branches"]]
+                if new_branch in existing:
                     st.warning(f"Store '{new_branch}' already exists!")
                 else:
-                    st.session_state.branch_list.append({"CODE": new_code, "BRANCH": new_branch})
-                    st.session_state.branch_list = sorted(st.session_state.branch_list, key=lambda x: x["BRANCH"].upper())
+                    db["branches"].append({"CODE": new_code, "BRANCH": new_branch})
+                    db["branches"] = sorted(db["branches"], key=lambda x: x["BRANCH"].upper())
+                    save_db(db)
                     st.success(f"✅ Added '{new_branch}' successfully in alphabetical order!")
                     st.rerun()
             else:
@@ -143,7 +157,6 @@ def normalize_name(s):
         return ""
     return re.sub(r"[^A-Za-z0-9]", "", str(s)).upper()
 
-# File upload columns
 col1, col2 = st.columns(2)
 
 with col1:
@@ -152,7 +165,7 @@ with col1:
 with col2:
     uploaded_files = st.file_uploader("📥 2. Select Store Cashbook Screenshots", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
 
-# 1. Process and permanently store Head Office Dr Balance Dump file
+# 1. Process Head Office Dr Balance Dump file (Save to Permanent Disk DB)
 if ho_dump_file:
     try:
         if ho_dump_file.name.endswith(".csv"):
@@ -182,22 +195,23 @@ if ho_dump_file:
             if b_val and clean_amt is not None:
                 dump_dict[b_val] = clean_amt
 
-        for b in st.session_state.branch_list:
+        for b in db["branches"]:
             b_norm = normalize_name(b["BRANCH"])
             b_code_norm = normalize_name(b["CODE"])
 
             if b_norm in dump_dict:
-                st.session_state.persistent_ho_balances[b["BRANCH"]] = dump_dict[b_norm]
+                db["ho_balances"][b["BRANCH"]] = dump_dict[b_norm]
             elif b_code_norm in dump_dict:
-                st.session_state.persistent_ho_balances[b["BRANCH"]] = dump_dict[b_code_norm]
+                db["ho_balances"][b["BRANCH"]] = dump_dict[b_code_norm]
 
-        st.success(f"✅ HO Dump Stored Permanently: {len(st.session_state.persistent_ho_balances)} stores Dr Balance saved!")
+        save_db(db)
+        st.success(f"✅ HO Dump Stored Permanently: {len(db['ho_balances'])} stores saved!")
     except Exception as e:
         st.error(f"Error reading HO Dump file: {e}")
 
-# 2. Process and permanently store screenshots data
+# 2. Process Store Screenshots (Save to Permanent Disk DB)
 if uploaded_files:
-    with st.spinner("Processing screenshots and permanently storing mapped data..."):
+    with st.spinner("Processing screenshots and permanently saving extracted data..."):
         for file in uploaded_files:
             image = Image.open(file)
             img_np = np.array(image)
@@ -207,7 +221,7 @@ if uploaded_files:
             full_text = " ".join([r[1] for r in ocr_results]).lower()
 
             matched_branch = None
-            for b in st.session_state.branch_list:
+            for b in db["branches"]:
                 b_name_clean = b["BRANCH"].lower().replace(" ", "").replace("-", "")
                 b_code_clean = b["CODE"].lower().replace("-", "")
                 file_clean = file.name.lower().replace(" ", "").replace("-", "").replace("_", "")
@@ -288,8 +302,7 @@ if uploaded_files:
                         elif "extra items" in left_text:
                             edits_list.append(amt)
 
-            # Save permanently into Session State
-            st.session_state.persistent_store_data[matched_branch] = {
+            db["store_data"][matched_branch] = {
                 "DENOMINATION": denom_val,
                 "PENDING APPRVLS": format_excel_formula(pending_apprvls),
                 "FINANCE AMNT": format_excel_formula(finance_amnt),
@@ -298,45 +311,68 @@ if uploaded_files:
                 "(KSP)'Sir's Approvals": format_excel_formula(ksp_approvals)
             }
 
-# Build Master DataFrame from Persistent State
+        save_db(db)
+
+# Build Master DataFrame from Permanent Disk Database
 final_rows = []
-for idx, b in enumerate(st.session_state.branch_list, start=1):
+for idx, b in enumerate(db["branches"], start=1):
     b_name = b["BRANCH"]
-    d = st.session_state.persistent_store_data.get(b_name, {})
-    opening_bal = st.session_state.persistent_ho_balances.get(b_name, "")
-    
+    d = db["store_data"].get(b_name, {})
+    opening_bal = db["ho_balances"].get(b_name, "")
+    manual = db["manual_edits"].get(b_name, {})
+
     final_rows.append({
         "Sl.No.": idx,
         "CODE": b["CODE"],
         "BRANCH": b["BRANCH"],
-        "OPENING BALANCE": str(opening_bal),
-        "DEPOSIT": "",
-        "DENOMINATION": str(d.get("DENOMINATION", "")),
-        "AddinGS": "",
-        "PENDING APPRVLS": str(d.get("PENDING APPRVLS", "")),
-        "FINANCE AMNT": str(d.get("FINANCE AMNT", "")),
-        "SR": str(d.get("SR", "")),
-        "SWEEPER SALARY": "",
-        "EDITS": str(d.get("EDITS", "")),
-        "APX SHORTAGE": "",
-        "(KSP)'Sir's Approvals": str(d.get("(KSP)'Sir's Approvals", "")),
-        "CLOSING BALANCE": "",
-        "REMARKS": ""
+        "OPENING BALANCE": manual.get("OPENING BALANCE", str(opening_bal)),
+        "DEPOSIT": manual.get("DEPOSIT", ""),
+        "DENOMINATION": manual.get("DENOMINATION", str(d.get("DENOMINATION", ""))),
+        "AddinGS": manual.get("AddinGS", ""),
+        "PENDING APPRVLS": manual.get("PENDING APPRVLS", str(d.get("PENDING APPRVLS", ""))),
+        "FINANCE AMNT": manual.get("FINANCE AMNT", str(d.get("FINANCE AMNT", ""))),
+        "SR": manual.get("SR", str(d.get("SR", ""))),
+        "SWEEPER SALARY": manual.get("SWEEPER SALARY", ""),
+        "EDITS": manual.get("EDITS", str(d.get("EDITS", ""))),
+        "APX SHORTAGE": manual.get("APX SHORTAGE", ""),
+        "(KSP)'Sir's Approvals": manual.get("(KSP)'Sir's Approvals", str(d.get("(KSP)'Sir's Approvals", ""))),
+        "CLOSING BALANCE": manual.get("CLOSING BALANCE", ""),
+        "REMARKS": manual.get("REMARKS", "")
     })
 
 df_master = pd.DataFrame(final_rows)
 
-# Interactive Editable Table
-st.subheader(f"📋 Head Office Master Cashbook ({len(st.session_state.branch_list)} Stores)")
-st.info("💡 **Note:** All uploaded Excel dump Dr Balances and Store Screenshot data are permanently retained even if you clear the upload boxes. You can edit cells freely.")
+st.subheader(f"📋 Head Office Master Cashbook ({len(db['branches'])} Stores)")
+st.info("💡 **Permanent Storage Active:** All data is permanently preserved even after page reload or browser restart.")
 
 edited_df = st.data_editor(
     df_master,
     use_container_width=True,
     height=550,
     disabled=["Sl.No.", "CODE", "BRANCH"],
-    num_rows="fixed"
+    num_rows="fixed",
+    key="master_data_editor"
 )
+
+# Persist manual edits to disk
+for idx, row in edited_df.iterrows():
+    b_name = row["BRANCH"]
+    db["manual_edits"][b_name] = {
+        "OPENING BALANCE": str(row["OPENING BALANCE"]) if pd.notna(row["OPENING BALANCE"]) else "",
+        "DEPOSIT": str(row["DEPOSIT"]) if pd.notna(row["DEPOSIT"]) else "",
+        "DENOMINATION": str(row["DENOMINATION"]) if pd.notna(row["DENOMINATION"]) else "",
+        "AddinGS": str(row["AddinGS"]) if pd.notna(row["AddinGS"]) else "",
+        "PENDING APPRVLS": str(row["PENDING APPRVLS"]) if pd.notna(row["PENDING APPRVLS"]) else "",
+        "FINANCE AMNT": str(row["FINANCE AMNT"]) if pd.notna(row["FINANCE AMNT"]) else "",
+        "SR": str(row["SR"]) if pd.notna(row["SR"]) else "",
+        "SWEEPER SALARY": str(row["SWEEPER SALARY"]) if pd.notna(row["SWEEPER SALARY"]) else "",
+        "EDITS": str(row["EDITS"]) if pd.notna(row["EDITS"]) else "",
+        "APX SHORTAGE": str(row["APX SHORTAGE"]) if pd.notna(row["APX SHORTAGE"]) else "",
+        "(KSP)'Sir's Approvals": str(row["(KSP)'Sir's Approvals"]) if pd.notna(row["(KSP)'Sir's Approvals"]) else "",
+        "CLOSING BALANCE": str(row["CLOSING BALANCE"]) if pd.notna(row["CLOSING BALANCE"]) else "",
+        "REMARKS": str(row["REMARKS"]) if pd.notna(row["REMARKS"]) else ""
+    }
+save_db(db)
 
 # Export and Reset options
 c_down, c_reset = st.columns([4, 1])
@@ -348,7 +384,7 @@ with c_down:
     excel_data = output.getvalue()
 
     st.download_button(
-        label="📥 Download Master Excel Sheet (With Your Edits)",
+        label="📥 Download Master Excel Sheet",
         data=excel_data,
         file_name="HO_MASTER_CASHBOOK_REPORT.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -357,7 +393,7 @@ with c_down:
 
 with c_reset:
     if st.button("🗑️ Reset / Clear All Data", use_container_width=True):
-        st.session_state.persistent_ho_balances = {}
-        st.session_state.persistent_store_data = {}
+        if os.path.exists(DB_FILE):
+            os.remove(DB_FILE)
         st.success("All data cleared successfully!")
         st.rerun()
