@@ -97,7 +97,6 @@ with st.expander("➕ Add New Store to Master"):
                     st.warning(f"Store '{new_branch}' already exists!")
                 else:
                     st.session_state.branch_list.append({"CODE": new_code, "BRANCH": new_branch})
-                    # Sort alphabetically by Branch Name
                     st.session_state.branch_list = sorted(st.session_state.branch_list, key=lambda x: x["BRANCH"].upper())
                     st.success(f"✅ Added '{new_branch}' successfully in alphabetical order!")
                     st.rerun()
@@ -111,8 +110,8 @@ def load_ocr():
 
 reader = load_ocr()
 
-def extract_number(text_val):
-    if not text_val:
+def extract_number(text_val, round_val=False):
+    if text_val is None:
         return None
     if re.search(r"\d{2}-\d{2}-\d{4}", str(text_val)):
         return None
@@ -120,7 +119,8 @@ def extract_number(text_val):
     match = re.search(r"(\d+\.?\d*)", clean)
     if match:
         try:
-            return float(match.group(1))
+            num = float(match.group(1))
+            return int(round(num)) if round_val else num
         except:
             return None
     return None
@@ -146,7 +146,7 @@ with col1:
 with col2:
     uploaded_files = st.file_uploader("📥 2. Select Store Cashbook Screenshots", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
 
-# 1. Process Head Office Dr Balance Dump file accurately
+# 1. Process Head Office Dr Balance Dump file accurately with ROUND OFF
 ho_opening_balances = {}
 if ho_dump_file:
     try:
@@ -173,7 +173,8 @@ if ho_dump_file:
         for idx, row in df_dump.iterrows():
             b_val = normalize_name(row[branch_col])
             raw_amt = row[bal_col]
-            clean_amt = extract_number(raw_amt)
+            # Round off Dr balance to nearest integer
+            clean_amt = extract_number(raw_amt, round_val=True)
             if b_val and clean_amt is not None:
                 dump_dict[b_val] = clean_amt
 
@@ -186,7 +187,7 @@ if ho_dump_file:
             elif b_code_norm in dump_dict:
                 ho_opening_balances[b["BRANCH"]] = dump_dict[b_code_norm]
 
-        st.success(f"✅ HO Dump Processed: {len(ho_opening_balances)} stores Dr Balance mapped perfectly!")
+        st.success(f"✅ HO Dump Processed: {len(ho_opening_balances)} stores Dr Balance rounded off and mapped perfectly!")
     except Exception as e:
         st.error(f"Error reading HO Dump file: {e}")
 
@@ -256,9 +257,9 @@ if uploaded_files:
                 # Rule 3: Denomination Total Amount
                 if any("total" in i["text"].lower() for i in right_items):
                     for i in reversed(right_items):
-                        val = extract_number(i["text"])
+                        val = extract_number(i["text"], round_val=False)
                         if val is not None and val > 0:
-                            denom_val = val
+                            denom_val = int(round(val)) if val.is_integer() else val
                             break
 
                 # Map line items in Left Table
@@ -268,9 +269,9 @@ if uploaded_files:
                     amt = None
                     for i in left_items:
                         if i["x"] > width * 0.50:
-                            val = extract_number(i["text"])
+                            val = extract_number(i["text"], round_val=False)
                             if val is not None and val > 0:
-                                amt = val
+                                amt = int(round(val)) if val.is_integer() else val
                                 break
 
                     if amt and amt > 0:
