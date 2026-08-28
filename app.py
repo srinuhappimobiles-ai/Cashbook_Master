@@ -16,7 +16,6 @@ st.markdown("""
 
 st.markdown('<div class="header-style">🏢 HAPPI MOBILES - HEAD OFFICE MASTER CASHBOOK AUTOMATION</div>', unsafe_allow_html=True)
 
-# Master Store List (107 Stores)
 BRANCH_MASTER = [
     {"CODE": "ADBD", "BRANCH": "ADILABAD"}, {"CODE": "AMP", "BRANCH": "AMALAPURAM"},
     {"CODE": "AMPT", "BRANCH": "AMEERPET"}, {"CODE": "ANTP", "BRANCH": "ANANTAPUR"},
@@ -108,10 +107,9 @@ if uploaded_files:
             width = img_np.shape[1]
 
             ocr_results = reader.readtext(img_np)
-            
-            # Combine all text for branch detection
             full_text = " ".join([r[1] for r in ocr_results]).lower()
 
+            # 1. Match Branch Name
             matched_branch = None
             for b in BRANCH_MASTER:
                 b_name_clean = b["BRANCH"].lower().replace(" ", "")
@@ -134,67 +132,85 @@ if uploaded_files:
             edits_list = []
             ksp_approvals = []
 
-            # Separate Left Side (Cashbook) & Right Side (Denomination)
-            left_side_items = []
-            right_side_items = []
-
+            # Structure items with coordinates
+            parsed_items = []
             for bbox, text, conf in ocr_results:
                 center_x = (bbox[0][0] + bbox[1][0]) / 2
                 center_y = (bbox[0][1] + bbox[2][1]) / 2
-                
-                if center_x > width * 0.65:
-                    right_side_items.append((center_y, text))
-                else:
-                    left_side_items.append((center_y, text))
+                parsed_items.append({"x": center_x, "y": center_y, "text": text.strip()})
 
-            # Sort top to bottom
-            left_side_items.sort(key=lambda x: x[0])
-            right_side_items.sort(key=lambda x: x[0])
+            # Separate Left Side (Cashbook) & Right Side (Denomination)
+            left_side = [it for it in parsed_items if it["x"] <= width * 0.65]
+            right_side = [it for it in parsed_items if it["x"] > width * 0.65]
 
-            # 1. Opening Balance from Left Side
-            for idx, (y, text) in enumerate(left_side_items):
-                t_low = text.lower()
-                if "apx closing" in t_low or "closing balance" in t_low:
-                    # Find closest number below or adjacent
-                    for offset in range(1, min(4, len(left_side_items) - idx)):
-                        val = clean_amount(left_side_items[idx + offset][1])
-                        if val is not None and val > 0:
-                            op_val = val
+            # 1. Find APX CLOSING BALANCE (Exact Same Row/Y-coordinate Match)
+            for it in left_side:
+                t_low = it["text"].lower()
+                if "closing" in t_low and ("apx" in t_low or "balance" in t_low):
+                    # Look for numerical text at the same vertical level (Y-coordinate ± 20px) to the right
+                    row_candidates = [
+                        c for c in left_side 
+                        if abs(c["y"] - it["y"]) < 25 and c["x"] > it["x"]
+                    ]
+                    for cand in row_candidates:
+                        amt = clean_amount(cand["text"])
+                        if amt is not None and amt > 0:
+                            op_val = amt
                             break
 
-            # 2. Denomination Total from Right Side
-            for idx, (y, text) in enumerate(right_side_items):
-                t_low = text.lower()
+            # 2. Find CASH DENOMINATION TOTAL (Right side bottom total)
+            right_side.sort(key=lambda item: item["y"])
+            for idx, it in enumerate(right_side):
+                t_low = it["text"].lower()
                 if "total" in t_low:
-                    # Get the final denomination total amount
-                    for offset in range(1, min(3, len(right_side_items) - idx)):
-                        val = clean_amount(right_side_items[idx + offset][1])
-                        if val is not None and val > 0:
-                            denom_val = val
+                    # Look in the same row or the items immediately below/adjacent
+                    row_candidates = [
+                        c for c in right_side 
+                        if abs(c["y"] - it["y"]) < 25 and c["x"] > it["x"]
+                    ]
+                    if row_candidates:
+                        denom_val = clean_amount(row_candidates[-1]["text"])
+                    else:
+                        for offset in range(1, min(4, len(right_side) - idx)):
+                            amt = clean_amount(right_side[idx + offset]["text"])
+                            if amt is not None and amt > 0:
+                                denom_val = amt
 
-            # 3. Categorize Line Items
-            for y, text in left_side_items:
-                t_low = text.lower()
+            # 3. Categorize Approvals & Expenses in Left Side
+            for it in left_side:
+                t_low = it["text"].lower()
                 
-                # Exclude header fields
-                if any(x in t_low for x in ["closing", "deposit", "diffrence", "difference", "approval amount", "excess"]):
-                    continue
-                
-                # Check for approval amount
-                amt = clean_amount(text)
-                if amt is None or amt == 0:
+                # Exclude standard headers and summary lines
+                if any(x in t_low for x in ["closing", "deposit", "diffrence", "difference", "total approval", "excess", "short", "approvals & sale"]):
                     continue
 
-                if any(k in t_low for k in ["pavan", "santhosh", "sharan"]):
-                    ksp_approvals.append(amt)
-                elif any(k in t_low for k in ["admin", "mallesh", "shiva", "khan", "naresh", "coo", "asm", "javeed", "trade license"]):
-                    pending_apprvls.append(amt)
-                elif any(k in t_low for k in ["bajaj", "idfc", "cash back", "cash to card", "upi", "dbd"]):
-                    finance_amnt.append(amt)
-                elif any(k in t_low for k in ["srn", "sr", "sale return", "doa"]):
-                    sr_list.append(amt)
-                elif "extra items" in t_low:
-                    edits_list.append(amt)
+                # Find amount in the same row
+                row_candidates = [
+                    c for c in left_side 
+                    if abs(c["y"] - it["y"]) < 25 and c["x"] > it["x"]
+                ]
+                
+                amt = None
+                for cand in row_candidates:
+                    val = clean_amount(cand["text"])
+                    if val is not None and val > 0:
+                        amt = val
+                        break
+
+                if not amt:
+                    amt = clean_amount(it["text"])
+
+                if amt and amt > 0:
+                    if any(k in t_low for k in ["pavan", "santhosh", "sharan"]):
+                        ksp_approvals.append(amt)
+                    elif any(k in t_low for k in ["admin", "mallesh", "shiva", "khan", "naresh", "coo", "asm", "javeed", "trade license"]):
+                        pending_apprvls.append(amt)
+                    elif any(k in t_low for k in ["bajaj", "idfc", "cash back", "cash to card", "upi", "dbd"]):
+                        finance_amnt.append(amt)
+                    elif any(k in t_low for k in ["srn", "sr", "sale return", "doa"]):
+                        sr_list.append(amt)
+                    elif "extra items" in t_low:
+                        edits_list.append(amt)
 
             store_data_map[matched_branch] = {
                 "OPENING BALANCE": op_val,
