@@ -78,7 +78,9 @@ DEFAULT_BRANCHES = [
     {"CODE": "ZB", "BRANCH": "ZAHEERABAD"}
 ]
 
-# Permanent Database Helpers
+if "uploader_key" not in st.session_state:
+    st.session_state.uploader_key = 0
+
 def load_db():
     if os.path.exists(DB_FILE):
         try:
@@ -99,7 +101,7 @@ def save_db(data):
 
 db = load_db()
 
-# Section: Add New Store dynamically
+# Add New Store Dynamically
 with st.expander("➕ Add New Store to Master"):
     c_add1, c_add2, c_add3 = st.columns([2, 3, 2])
     with c_add1:
@@ -123,7 +125,6 @@ with st.expander("➕ Add New Store to Master"):
             else:
                 st.error("Please enter both Store Code and Store Name.")
 
-# Load AI OCR reader model
 @st.cache_resource
 def load_ocr():
     return easyocr.Reader(['en'])
@@ -160,70 +161,75 @@ def normalize_name(s):
 col1, col2 = st.columns(2)
 
 with col1:
-    ho_dump_file = st.file_uploader("📂 1. Upload HO Apex Dr Balance Dump File (Excel / CSV)", type=["xlsx", "xls", "csv"])
+    ho_dump_file = st.file_uploader(
+        "📂 1. Upload HO Apex Dr Balance Dump File (Excel / CSV)", 
+        type=["xlsx", "xls", "csv"],
+        key=f"ho_dump_{st.session_state.uploader_key}"
+    )
 
 with col2:
-    uploaded_files = st.file_uploader("📥 2. Select Store Cashbook Screenshots", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
+    uploaded_files = st.file_uploader(
+        "📥 2. Select Store Cashbook Screenshots", 
+        type=["png", "jpg", "jpeg"], 
+        accept_multiple_files=True,
+        key="store_screenshots_uploader"
+    )
 
-# 1. Process Head Office Dr Balance Dump file (Instant Update)
+# Process HO Dump File
 if ho_dump_file:
-    try:
-        if ho_dump_file.name.endswith(".csv"):
-            df_dump = pd.read_csv(ho_dump_file)
-        else:
-            df_dump = pd.read_excel(ho_dump_file)
+    current_file_id = f"{ho_dump_file.name}_{ho_dump_file.size}"
+    if st.session_state.get("last_processed_file") != current_file_id:
+        try:
+            if ho_dump_file.name.endswith(".csv"):
+                df_dump = pd.read_csv(ho_dump_file)
+            else:
+                df_dump = pd.read_excel(ho_dump_file)
 
-        branch_col = None
-        bal_col = None
-        for col in df_dump.columns:
-            c_low = str(col).lower()
-            if "branch" in c_low or "store" in c_low or "name" in c_low:
-                branch_col = col
-            elif "balance" in c_low or "opening" in c_low or "dr" in c_low or "amount" in c_low:
-                bal_col = col
+            branch_col = None
+            bal_col = None
+            for col in df_dump.columns:
+                c_low = str(col).lower()
+                if "branch" in c_low or "store" in c_low or "name" in c_low:
+                    branch_col = col
+                elif "balance" in c_low or "opening" in c_low or "dr" in c_low or "amount" in c_low:
+                    bal_col = col
 
-        if branch_col is None:
-            branch_col = df_dump.columns[0]
-        if bal_col is None:
-            bal_col = df_dump.columns[1] if len(df_dump.columns) > 1 else df_dump.columns[0]
+            if branch_col is None:
+                branch_col = df_dump.columns[0]
+            if bal_col is None:
+                bal_col = df_dump.columns[1] if len(df_dump.columns) > 1 else df_dump.columns[0]
 
-        dump_dict = {}
-        for idx, row in df_dump.iterrows():
-            b_val = normalize_name(row[branch_col])
-            raw_amt = row[bal_col]
-            clean_amt = extract_number(raw_amt, round_val=True)
-            if b_val and clean_amt is not None:
-                dump_dict[b_val] = clean_amt
+            dump_dict = {}
+            for idx, row in df_dump.iterrows():
+                b_val = normalize_name(row[branch_col])
+                raw_amt = row[bal_col]
+                clean_amt = extract_number(raw_amt, round_val=True)
+                if b_val and clean_amt is not None:
+                    dump_dict[b_val] = clean_amt
 
-        updated_count = 0
-        for b in db["branches"]:
-            b_norm = normalize_name(b["BRANCH"])
-            b_code_norm = normalize_name(b["CODE"])
+            for b in db["branches"]:
+                b_norm = normalize_name(b["BRANCH"])
+                b_code_norm = normalize_name(b["CODE"])
 
-            if b_norm in dump_dict:
-                db["ho_balances"][b["BRANCH"]] = dump_dict[b_norm]
-                # Also sync into manual_edits so it appears immediately on table
-                if b["BRANCH"] not in db["manual_edits"]:
-                    db["manual_edits"][b["BRANCH"]] = {}
-                db["manual_edits"][b["BRANCH"]]["OPENING BALANCE"] = str(dump_dict[b_norm])
-                updated_count += 1
-            elif b_code_norm in dump_dict:
-                db["ho_balances"][b["BRANCH"]] = dump_dict[b_code_norm]
-                if b["BRANCH"] not in db["manual_edits"]:
-                    db["manual_edits"][b["BRANCH"]] = {}
-                db["manual_edits"][b["BRANCH"]]["OPENING BALANCE"] = str(dump_dict[b_code_norm])
-                updated_count += 1
+                if b_norm in dump_dict:
+                    db["ho_balances"][b["BRANCH"]] = dump_dict[b_norm]
+                    if b["BRANCH"] not in db["manual_edits"]:
+                        db["manual_edits"][b["BRANCH"]] = {}
+                    db["manual_edits"][b["BRANCH"]]["OPENING BALANCE"] = str(dump_dict[b_norm])
+                elif b_code_norm in dump_dict:
+                    db["ho_balances"][b["BRANCH"]] = dump_dict[b_code_norm]
+                    if b["BRANCH"] not in db["manual_edits"]:
+                        db["manual_edits"][b["BRANCH"]] = {}
+                    db["manual_edits"][b["BRANCH"]]["OPENING BALANCE"] = str(dump_dict[b_code_norm])
 
-        save_db(db)
-        # Rerun once upon file upload to populate table immediately
-        if "dump_processed" not in st.session_state or st.session_state.dump_processed != ho_dump_file.name:
-            st.session_state.dump_processed = ho_dump_file.name
+            save_db(db)
+            st.session_state.last_processed_file = current_file_id
             st.rerun()
 
-    except Exception as e:
-        st.error(f"Error reading HO Dump file: {e}")
+        except Exception as e:
+            st.error(f"Error reading HO Dump file: {e}")
 
-# 2. Process Store Screenshots (Instant Save & Update)
+# Process Store Screenshots
 if uploaded_files:
     with st.spinner("Processing screenshots and mapping data..."):
         for file in uploaded_files:
@@ -284,7 +290,6 @@ if uploaded_files:
                 left_items = [i for i in r["items"] if i["x"] <= width * 0.68]
                 right_items = [i for i in r["items"] if i["x"] > width * 0.68]
 
-                # Rule 3: Denomination Total Amount
                 if any("total" in i["text"].lower() for i in right_items):
                     for i in reversed(right_items):
                         val = extract_number(i["text"], round_val=False)
@@ -292,7 +297,6 @@ if uploaded_files:
                             denom_val = int(round(val)) if val.is_integer() else val
                             break
 
-                # Map line items in Left Table
                 left_text = " ".join([i["text"] for i in left_items]).lower()
                 
                 if not any(x in left_text for x in ["closing", "deposit", "diffrence", "difference", "total approval", "excess", "short", "approvals & sale", "add ins", "addins", "cash book"]):
@@ -327,7 +331,7 @@ if uploaded_files:
 
         save_db(db)
 
-# Build Master DataFrame from Permanent Disk Database
+# Build Master DataFrame
 final_rows = []
 for idx, b in enumerate(db["branches"], start=1):
     b_name = b["BRANCH"]
@@ -368,7 +372,7 @@ edited_df = st.data_editor(
     key="master_data_editor"
 )
 
-# Persist manual edits to disk
+# Persist manual edits
 for idx, row in edited_df.iterrows():
     b_name = row["BRANCH"]
     db["manual_edits"][b_name] = {
@@ -411,7 +415,10 @@ with c_reset:
         for b_name in db["manual_edits"]:
             db["manual_edits"][b_name]["OPENING BALANCE"] = ""
         save_db(db)
-        if "dump_processed" in st.session_state:
-            del st.session_state["dump_processed"]
-        st.success("Dr Balances cleared! Other data is safe.")
+        
+        # Reset uploader key to clear file from input widget
+        st.session_state.uploader_key += 1
+        if "last_processed_file" in st.session_state:
+            del st.session_state["last_processed_file"]
+            
         st.rerun()
