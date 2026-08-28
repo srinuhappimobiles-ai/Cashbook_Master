@@ -82,8 +82,7 @@ reader = load_ocr()
 def extract_number(text_val):
     if not text_val:
         return None
-    # Extracts clean numbers with optional decimals (e.g. 2,129.01 -> 2129.01)
-    clean = text_val.replace(",", "").strip()
+    clean = str(text_val).replace(",", "").strip()
     match = re.search(r"(\d+\.?\d*)", clean)
     if match:
         try:
@@ -115,17 +114,47 @@ if uploaded_files:
 
             matched_branch = None
             for b in BRANCH_MASTER:
-                b_name_clean = b["BRANCH"].lower().replace(" ", "")
-                file_clean = file.name.lower().replace(" ", "")
-                if b_name_clean in file_clean or b["CODE"].lower() in file_clean:
+                b_name_clean = b["BRANCH"].lower().replace(" ", "").replace("-", "")
+                b_code_clean = b["CODE"].lower().replace("-", "")
+                file_clean = file.name.lower().replace(" ", "").replace("-", "").replace("_", "")
+                full_clean = full_text.replace(" ", "").replace("-", "")
+                
+                # Check branch code (e.g., WGL 1 -> WARANGAL)
+                if file_clean.startswith(b_code_clean) or b_name_clean in file_clean:
                     matched_branch = b["BRANCH"]
                     break
-                elif b_name_clean in full_text.replace(" ", ""):
+                elif b_name_clean in full_clean:
                     matched_branch = b["BRANCH"]
                     break
 
             if not matched_branch:
                 continue
+
+            # Organize detections into rows based on Y coordinates
+            boxes = []
+            for bbox, text, conf in ocr_results:
+                cx = (bbox[0][0] + bbox[1][0]) / 2
+                cy = (bbox[0][1] + bbox[2][1]) / 2
+                boxes.append({"x": cx, "y": cy, "text": text.strip()})
+
+            # Cluster items into rows (items within 18px Y-distance are in the same row)
+            boxes.sort(key=lambda b: b["y"])
+            rows = []
+            for b in boxes:
+                placed = False
+                for r in rows:
+                    if abs(r["y"] - b["y"]) <= 18:
+                        r["items"].append(b)
+                        # Recalculate average y
+                        r["y"] = sum(i["y"] for i in r["items"]) / len(r["items"])
+                        placed = True
+                        break
+                if not placed:
+                    rows.append({"y": b["y"], "items": [b]})
+
+            # Sort items inside each row from left to right (by X coordinate)
+            for r in rows:
+                r["items"].sort(key=lambda item: item["x"])
 
             op_val = ""
             denom_val = ""
@@ -135,83 +164,54 @@ if uploaded_files:
             edits_list = []
             ksp_approvals = []
 
-            # Box centers
-            boxes = []
-            for bbox, text, conf in ocr_results:
-                cx = (bbox[0][0] + bbox[1][0]) / 2
-                cy = (bbox[0][1] + bbox[2][1]) / 2
-                boxes.append({"x": cx, "y": cy, "text": text.strip()})
+            for r in rows:
+                row_text = " ".join([i["text"] for i in r["items"]]).lower()
+                
+                # Split row into Left Table vs Right Denomination Table
+                left_items = [i for i in r["items"] if i["x"] <= width * 0.68]
+                right_items = [i for i in r["items"] if i["x"] > width * 0.68]
 
-            left_side = [b for b in boxes if b["x"] <= width * 0.65]
-            right_side = [b for b in boxes if b["x"] > width * 0.65]
-
-            # 1. Opening Balance: Find 'APX CLOSING BALANCE' and match right-hand numeric cell strictly on horizontal axis
-            apx_labels = [b for b in left_side if "closing" in b["text"].lower() or "apx" in b["text"].lower()]
-            if apx_labels:
-                target_y = apx_labels[0]["y"]
-                # Candidates on the right side of the label within vertical distance <= 18 pixels
-                row_nums = [
-                    b for b in left_side 
-                    if b["x"] > apx_labels[0]["x"] and abs(b["y"] - target_y) <= 18
-                ]
-                row_nums.sort(key=lambda b: b["x"])
-                for cand in row_nums:
-                    val = extract_number(cand["text"])
-                    if val is not None and val > 0:
-                        op_val = val
-                        break
-
-            # 2. Denomination Total: Match Right-Hand bottom total
-            right_side.sort(key=lambda b: b["y"])
-            total_labels = [b for b in right_side if "total" in b["text"].lower()]
-            if total_labels:
-                target_y = total_labels[-1]["y"]
-                denom_cands = [
-                    b for b in right_side 
-                    if b["x"] > total_labels[-1]["x"] and abs(b["y"] - target_y) <= 20
-                ]
-                if denom_cands:
-                    denom_val = extract_number(denom_cands[-1]["text"])
-                else:
-                    for b in right_side:
-                        if b["y"] >= target_y - 5:
-                            val = extract_number(b["text"])
+                # 1. Opening Balance (APX CLOSING BALANCE)
+                if any("closing" in i["text"].lower() or "apx" in i["text"].lower() for i in left_items):
+                    for i in left_items:
+                        # Extract the numeric value in the rightmost cell of APX CLOSING BALANCE
+                        if i["x"] > width * 0.45:
+                            val = extract_number(i["text"])
                             if val is not None and val > 0:
-                                denom_val = val
+                                op_val = val
 
-            # 3. Categorize Approvals & Expenses in Left Side
-            for b in left_side:
-                t_low = b["text"].lower()
+                # 2. Denomination Total
+                if any("total" in i["text"].lower() for i in right_items):
+                    # Pick the last amount in the right table row
+                    for i in reversed(right_items):
+                        val = extract_number(i["text"])
+                        if val is not None and val > 0:
+                            denom_val = val
+                            break
+
+                # 3. Approvals, Finance & Expenses
+                left_text = " ".join([i["text"] for i in left_items]).lower()
                 
-                if any(x in t_low for x in ["closing", "deposit", "diffrence", "difference", "total approval", "excess", "short", "approvals & sale", "add ins", "addins"]):
-                    continue
+                if not any(x in left_text for x in ["closing", "deposit", "diffrence", "difference", "total approval", "excess", "short", "approvals & sale", "add ins", "addins", "cash book"]):
+                    # Look for amounts in this line
+                    amt = None
+                    for i in reversed(left_items):
+                        val = extract_number(i["text"])
+                        if val is not None and val > 0 and val != 2026: # Exclude date year
+                            amt = val
+                            break
 
-                row_cands = [
-                    cand for cand in left_side 
-                    if cand["x"] > b["x"] and abs(cand["y"] - b["y"]) <= 18
-                ]
-                
-                amt = None
-                for cand in row_cands:
-                    val = extract_number(cand["text"])
-                    if val is not None and val > 0:
-                        amt = val
-                        break
-
-                if not amt:
-                    amt = extract_number(b["text"])
-
-                if amt and amt > 0:
-                    if any(k in t_low for k in ["pavan", "santhosh", "sharan"]):
-                        ksp_approvals.append(amt)
-                    elif any(k in t_low for k in ["admin", "mallesh", "shiva", "khan", "naresh", "coo", "asm", "javeed", "trade license"]):
-                        pending_apprvls.append(amt)
-                    elif any(k in t_low for k in ["bajaj", "idfc", "cash back", "cash to card", "upi", "dbd"]):
-                        finance_amnt.append(amt)
-                    elif any(k in t_low for k in ["srn", "sr", "sale return", "doa"]):
-                        sr_list.append(amt)
-                    elif "extra items" in t_low:
-                        edits_list.append(amt)
+                    if amt and amt > 0:
+                        if any(k in left_text for k in ["pavan", "santhosh", "sharan"]):
+                            ksp_approvals.append(amt)
+                        elif any(k in left_text for k in ["admin", "mallesh", "shiva", "khan", "naresh", "coo", "asm", "javeed", "trade license"]):
+                            pending_apprvls.append(amt)
+                        elif any(k in left_text for k in ["bajaj", "idfc", "cash back", "cashback", "cash to card", "upi", "dbd"]):
+                            finance_amnt.append(amt)
+                        elif any(k in left_text for k in ["srn", "sr", "sale return", "sales return", "doa"]):
+                            sr_list.append(amt)
+                        elif "extra items" in left_text:
+                            edits_list.append(amt)
 
             store_data_map[matched_branch] = {
                 "OPENING BALANCE": op_val,
