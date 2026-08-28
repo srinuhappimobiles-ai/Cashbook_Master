@@ -6,8 +6,10 @@ import easyocr
 import re
 import io
 
+# Page configuration
 st.set_page_config(page_title="Happi Cashbook Master", layout="wide")
 
+# Custom UI styling
 st.markdown("""
     <style>
     .header-style { font-size: 24px; font-weight: bold; color: #0E4C92; margin-bottom: 15px; }
@@ -16,6 +18,7 @@ st.markdown("""
 
 st.markdown('<div class="header-style">🏢 HAPPI MOBILES - HEAD OFFICE MASTER CASHBOOK AUTOMATION</div>', unsafe_allow_html=True)
 
+# Master Store List (107 Stores)
 BRANCH_MASTER = [
     {"CODE": "ADBD", "BRANCH": "ADILABAD"}, {"CODE": "AMP", "BRANCH": "AMALAPURAM"},
     {"CODE": "AMPT", "BRANCH": "AMEERPET"}, {"CODE": "ANTP", "BRANCH": "ANANTAPUR"},
@@ -73,12 +76,14 @@ BRANCH_MASTER = [
     {"CODE": "ZB", "BRANCH": "ZAHEERABAD"}
 ]
 
+# Load AI OCR reader model
 @st.cache_resource
 def load_ocr():
     return easyocr.Reader(['en'])
 
 reader = load_ocr()
 
+# Helper function to extract numeric values while ignoring date formats
 def extract_number(text_val):
     if not text_val:
         return None
@@ -93,6 +98,7 @@ def extract_number(text_val):
             return None
     return None
 
+# Helper function to format multiple numbers as Excel formula (=500+300)
 def format_excel_formula(num_list):
     if not num_list:
         return ""
@@ -100,6 +106,7 @@ def format_excel_formula(num_list):
         return num_list[0]
     return "=" + "+".join([str(x) for x in num_list])
 
+# File upload columns
 col1, col2 = st.columns(2)
 
 with col1:
@@ -108,7 +115,7 @@ with col1:
 with col2:
     uploaded_files = st.file_uploader("📥 2. Select Store Cashbook Screenshots", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
 
-# 1. Process HO Dr Balance Dump
+# 1. Process Head Office Dr Balance Dump file
 ho_opening_balances = {}
 if ho_dump_file:
     try:
@@ -117,8 +124,6 @@ if ho_dump_file:
         else:
             df_dump = pd.read_excel(ho_dump_file)
 
-        # Match Branch codes/names in the HO dump
-        dump_text_cols = df_dump.astype(str)
         for b in BRANCH_MASTER:
             b_code = b["CODE"].lower()
             b_branch = b["BRANCH"].lower().replace(" ", "")
@@ -126,7 +131,6 @@ if ho_dump_file:
             for idx, row in df_dump.iterrows():
                 row_str = " ".join(row.astype(str)).lower().replace(" ", "")
                 if b_code in row_str or b_branch in row_str:
-                    # Find first numeric amount in the row representing the Dr balance
                     for val in row:
                         amt = extract_number(val)
                         if amt is not None and amt > 0:
@@ -137,11 +141,11 @@ if ho_dump_file:
     except Exception as e:
         st.error(f"Error reading HO Dump file: {e}")
 
-# 2. Process Store Screenshots (Denomination, Approvals, Finance, SR, Edits)
+# 2. Process Store Screenshots for remaining fields
 store_data_map = {}
 
 if uploaded_files:
-    with st.spinner("Processing screenshots and mapping data..."):
+    with st.spinner("Processing screenshots and mapping data based on rules..."):
         for file in uploaded_files:
             image = Image.open(file)
             img_np = np.array(image)
@@ -150,6 +154,7 @@ if uploaded_files:
             ocr_results = reader.readtext(img_np)
             full_text = " ".join([r[1] for r in ocr_results]).lower()
 
+            # Match Branch Name or Branch Code
             matched_branch = None
             for b in BRANCH_MASTER:
                 b_name_clean = b["BRANCH"].lower().replace(" ", "").replace("-", "")
@@ -167,12 +172,14 @@ if uploaded_files:
             if not matched_branch:
                 continue
 
+            # Collect detected bounding boxes
             boxes = []
             for bbox, text, conf in ocr_results:
                 cx = (bbox[0][0] + bbox[1][0]) / 2
                 cy = (bbox[0][1] + bbox[2][1]) / 2
                 boxes.append({"x": cx, "y": cy, "text": text.strip()})
 
+            # Cluster boxes into rows by Y-coordinate
             boxes.sort(key=lambda b: b["y"])
             rows = []
             for b in boxes:
@@ -197,10 +204,11 @@ if uploaded_files:
             ksp_approvals = []
 
             for r in rows:
+                # Separate Left Table vs Right Denomination Table
                 left_items = [i for i in r["items"] if i["x"] <= width * 0.68]
                 right_items = [i for i in r["items"] if i["x"] > width * 0.68]
 
-                # Denomination Total
+                # Rule 3: Denomination Total Amount
                 if any("total" in i["text"].lower() for i in right_items):
                     for i in reversed(right_items):
                         val = extract_number(i["text"])
@@ -208,27 +216,32 @@ if uploaded_files:
                             denom_val = val
                             break
 
-                # Line Items in Left Table
+                # Map line items in the Left Table
                 left_text = " ".join([i["text"] for i in left_items]).lower()
                 
                 if not any(x in left_text for x in ["closing", "deposit", "diffrence", "difference", "total approval", "excess", "short", "approvals & sale", "add ins", "addins", "cash book"]):
                     amt = None
                     for i in left_items:
-                        if i["x"] > width * 0.50:
+                        if i["x"] > width * 0.50:  # Value strictly in 3rd column (AMOUNT)
                             val = extract_number(i["text"])
                             if val is not None and val > 0:
                                 amt = val
                                 break
 
                     if amt and amt > 0:
+                        # Rule 11: (KSP)'Sir's Approvals
                         if any(k in left_text for k in ["pavan", "santhosh", "sharan"]):
                             ksp_approvals.append(amt)
+                        # Rule 5: Pending Apprvls
                         elif any(k in left_text for k in ["admin", "mallesh", "shiva", "khan", "naresh", "coo", "asm", "javeed", "trade license"]):
                             pending_apprvls.append(amt)
+                        # Rule 6: Finance Amnt
                         elif any(k in left_text for k in ["bajaj", "idfc", "cash back", "cashback", "cash to card", "upi", "dbd"]):
                             finance_amnt.append(amt)
+                        # Rule 7: SR
                         elif any(k in left_text for k in ["srn", "sr", "sale return", "sales return", "doa"]):
                             sr_list.append(amt)
+                        # Rule 9: Edits
                         elif "extra items" in left_text:
                             edits_list.append(amt)
 
@@ -241,13 +254,13 @@ if uploaded_files:
                 "(KSP)'Sir's Approvals": format_excel_formula(ksp_approvals)
             }
 
-# Construct Final Master Table
+# Build Master DataFrame
 final_rows = []
 for idx, b in enumerate(BRANCH_MASTER, start=1):
     b_name = b["BRANCH"]
     d = store_data_map.get(b_name, {})
     
-    # Priority for Opening Balance: HO Dump File > Manual Edit
+    # Opening balance mapped directly from HO Dump file
     opening_bal = ho_opening_balances.get(b_name, "")
     
     final_rows.append({
@@ -271,8 +284,9 @@ for idx, b in enumerate(BRANCH_MASTER, start=1):
 
 df_master = pd.DataFrame(final_rows)
 
+# Interactive Editable Table
 st.subheader("📋 Head Office Master Cashbook (Editable)")
-st.info("💡 **Note:"Below Given All Cells Are Editable")
+st.info("💡 **Note:** You can double-click any cell to edit values or type manual entries like DEPOSIT, AddinGS, and REMARKS directly.")
 
 edited_df = st.data_editor(
     df_master,
@@ -282,6 +296,7 @@ edited_df = st.data_editor(
     num_rows="fixed"
 )
 
+# Export edited data to Excel
 output = io.BytesIO()
 with pd.ExcelWriter(output, engine='openpyxl') as writer:
     edited_df.to_excel(writer, index=False, sheet_name='MASTER REPORT')
