@@ -82,7 +82,6 @@ reader = load_ocr()
 def extract_number(text_val):
     if not text_val:
         return None
-    # Filter out dates like 25-08-2026 or parts of dates
     if re.search(r"\d{2}-\d{2}-\d{4}", str(text_val)):
         return None
     clean = str(text_val).replace(",", "").strip()
@@ -103,10 +102,10 @@ def format_excel_formula(num_list):
 
 uploaded_files = st.file_uploader("📥 Select All Store Cashbook Screenshots", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
 
-if uploaded_files:
-    store_data_map = {}
+store_data_map = {}
 
-    with st.spinner("Processing screenshots and mapping data..."):
+if uploaded_files:
+    with st.spinner("Processing screenshots and extracting data..."):
         for file in uploaded_files:
             image = Image.open(file)
             img_np = np.array(image)
@@ -132,7 +131,6 @@ if uploaded_files:
             if not matched_branch:
                 continue
 
-            # Group items into rows
             boxes = []
             for bbox, text, conf in ocr_results:
                 cx = (bbox[0][0] + bbox[1][0]) / 2
@@ -164,14 +162,13 @@ if uploaded_files:
             ksp_approvals = []
 
             for r in rows:
-                # Left Table vs Right Denomination Table
                 left_items = [i for i in r["items"] if i["x"] <= width * 0.68]
                 right_items = [i for i in r["items"] if i["x"] > width * 0.68]
 
                 # 1. Opening Balance
                 if any("closing" in i["text"].lower() or "apx" in i["text"].lower() for i in left_items):
                     for i in left_items:
-                        if i["x"] > width * 0.50:  # Amount column
+                        if i["x"] > width * 0.50:
                             val = extract_number(i["text"])
                             if val is not None and val > 0:
                                 op_val = val
@@ -184,12 +181,11 @@ if uploaded_files:
                             denom_val = val
                             break
 
-                # 3. Line items - Strictly match AMOUNT column (X > width * 0.50)
+                # 3. Line items
                 left_text = " ".join([i["text"] for i in left_items]).lower()
                 
                 if not any(x in left_text for x in ["closing", "deposit", "diffrence", "difference", "total approval", "excess", "short", "approvals & sale", "add ins", "addins", "cash book"]):
                     amt = None
-                    # Search exclusively in the AMOUNT column area
                     for i in left_items:
                         if i["x"] > width * 0.50:
                             val = extract_number(i["text"])
@@ -219,44 +215,54 @@ if uploaded_files:
                 "(KSP)'Sir's Approvals": format_excel_formula(ksp_approvals)
             }
 
-    # Construct Master Table
-    final_rows = []
-    for idx, b in enumerate(BRANCH_MASTER, start=1):
-        b_name = b["BRANCH"]
-        d = store_data_map.get(b_name, {})
-        
-        final_rows.append({
-            "Sl.No.": idx,
-            "CODE": b["CODE"],
-            "BRANCH": b["BRANCH"],
-            "OPENING BALANCE": d.get("OPENING BALANCE", ""),
-            "DEPOSIT": "",
-            "DENOMINATION": d.get("DENOMINATION", ""),
-            "AddinGS": "",
-            "PENDING APPRVLS": d.get("PENDING APPRVLS", ""),
-            "FINANCE AMNT": d.get("FINANCE AMNT", ""),
-            "SR": d.get("SR", ""),
-            "SWEEPER SALARY": "",
-            "EDITS": d.get("EDITS", ""),
-            "APX SHORTAGE": "",
-            "(KSP)'Sir's Approvals": d.get("(KSP)'Sir's Approvals", ""),
-            "CLOSING BALANCE": "",
-            "REMARKS": ""
-        })
+# Build Master DataFrame
+final_rows = []
+for idx, b in enumerate(BRANCH_MASTER, start=1):
+    b_name = b["BRANCH"]
+    d = store_data_map.get(b_name, {})
+    
+    final_rows.append({
+        "Sl.No.": idx,
+        "CODE": b["CODE"],
+        "BRANCH": b["BRANCH"],
+        "OPENING BALANCE": str(d.get("OPENING BALANCE", "")),
+        "DEPOSIT": "",
+        "DENOMINATION": str(d.get("DENOMINATION", "")),
+        "AddinGS": "",
+        "PENDING APPRVLS": str(d.get("PENDING APPRVLS", "")),
+        "FINANCE AMNT": str(d.get("FINANCE AMNT", "")),
+        "SR": str(d.get("SR", "")),
+        "SWEEPER SALARY": "",
+        "EDITS": str(d.get("EDITS", "")),
+        "APX SHORTAGE": "",
+        "(KSP)'Sir's Approvals": str(d.get("(KSP)'Sir's Approvals", "")),
+        "CLOSING BALANCE": "",
+        "REMARKS": ""
+    })
 
-    df_master = pd.DataFrame(final_rows)
-    st.subheader("📋 Head Office Master Cashbook Preview")
-    st.dataframe(df_master, use_container_width=True, height=500)
+df_master = pd.DataFrame(final_rows)
 
-    # Excel Export
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_master.to_excel(writer, index=False, sheet_name='MASTER REPORT')
-    excel_data = output.getvalue()
+st.subheader("📋 Head Office Master Cashbook (Editable)")
+st.info("💡 **సూచన:** మీరు కింద కనిపిస్తున్న టేబుల్‌లోని ఏ సెల్‌నైనా డబుల్ క్లిక్ చేసి మార్చవచ్చు లేదా కొత్త విలువలను మాన్యువల్‌గా ఎంటర్ చేయవచ్చు.")
 
-    st.download_button(
-        label="📥 Download Final Master Excel Sheet",
-        data=excel_data,
-        file_name="HO_MASTER_CASHBOOK_REPORT.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+# Interactive Editable Table
+edited_df = st.data_editor(
+    df_master,
+    use_container_width=True,
+    height=550,
+    disabled=["Sl.No.", "CODE", "BRANCH"], # Store Details locked, others editable
+    num_rows="fixed"
+)
+
+# Export Edited Data to Excel
+output = io.BytesIO()
+with pd.ExcelWriter(output, engine='openpyxl') as writer:
+    edited_df.to_excel(writer, index=False, sheet_name='MASTER REPORT')
+excel_data = output.getvalue()
+
+st.download_button(
+    label="📥 Download Master Excel Sheet (With Your Edits)",
+    data=excel_data,
+    file_name="HO_MASTER_CASHBOOK_REPORT.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+)
