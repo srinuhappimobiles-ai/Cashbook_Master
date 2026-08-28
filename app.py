@@ -82,12 +82,12 @@ reader = load_ocr()
 
 def clean_amount(val):
     if not val:
-        return 0.0
-    val_clean = re.sub(r"[^\d.]", "", str(val))
+        return None
+    cleaned = re.sub(r"[^\d.]", "", str(val))
     try:
-        return float(val_clean)
+        return float(cleaned)
     except:
-        return 0.0
+        return None
 
 def format_excel_formula(num_list):
     if not num_list:
@@ -100,20 +100,18 @@ uploaded_files = st.file_uploader("📥 Select All Store Cashbook Screenshots", 
 
 if uploaded_files:
     store_data_map = {}
-    ocr_debug_logs = {}
 
-    with st.spinner("Processing screenshots with AI OCR..."):
+    with st.spinner("Processing screenshots and mapping data..."):
         for file in uploaded_files:
             image = Image.open(file)
             img_np = np.array(image)
+            width = img_np.shape[1]
+
+            ocr_results = reader.readtext(img_np)
             
-            # EasyOCR Detection
-            results = reader.readtext(img_np, detail=0)
-            ocr_debug_logs[file.name] = results
-            
-            all_text_str = " ".join(results).lower()
-            
-            # Branch Matching
+            # Combine all text for branch detection
+            full_text = " ".join([r[1] for r in ocr_results]).lower()
+
             matched_branch = None
             for b in BRANCH_MASTER:
                 b_name_clean = b["BRANCH"].lower().replace(" ", "")
@@ -121,10 +119,10 @@ if uploaded_files:
                 if b_name_clean in file_clean or b["CODE"].lower() in file_clean:
                     matched_branch = b["BRANCH"]
                     break
-                elif b_name_clean in all_text_str.replace(" ", ""):
+                elif b_name_clean in full_text.replace(" ", ""):
                     matched_branch = b["BRANCH"]
                     break
-            
+
             if not matched_branch:
                 continue
 
@@ -136,42 +134,67 @@ if uploaded_files:
             edits_list = []
             ksp_approvals = []
 
-            for idx, text in enumerate(results):
+            # Separate Left Side (Cashbook) & Right Side (Denomination)
+            left_side_items = []
+            right_side_items = []
+
+            for bbox, text, conf in ocr_results:
+                center_x = (bbox[0][0] + bbox[1][0]) / 2
+                center_y = (bbox[0][1] + bbox[2][1]) / 2
+                
+                if center_x > width * 0.65:
+                    right_side_items.append((center_y, text))
+                else:
+                    left_side_items.append((center_y, text))
+
+            # Sort top to bottom
+            left_side_items.sort(key=lambda x: x[0])
+            right_side_items.sort(key=lambda x: x[0])
+
+            # 1. Opening Balance from Left Side
+            for idx, (y, text) in enumerate(left_side_items):
+                t_low = text.lower()
+                if "apx closing" in t_low or "closing balance" in t_low:
+                    # Find closest number below or adjacent
+                    for offset in range(1, min(4, len(left_side_items) - idx)):
+                        val = clean_amount(left_side_items[idx + offset][1])
+                        if val is not None and val > 0:
+                            op_val = val
+                            break
+
+            # 2. Denomination Total from Right Side
+            for idx, (y, text) in enumerate(right_side_items):
+                t_low = text.lower()
+                if "total" in t_low:
+                    # Get the final denomination total amount
+                    for offset in range(1, min(3, len(right_side_items) - idx)):
+                        val = clean_amount(right_side_items[idx + offset][1])
+                        if val is not None and val > 0:
+                            denom_val = val
+
+            # 3. Categorize Line Items
+            for y, text in left_side_items:
                 t_low = text.lower()
                 
-                # Rule 1: APX Closing Balance
-                if "closing balance" in t_low or "apx" in t_low:
-                    for next_idx in range(idx + 1, min(idx + 5, len(results))):
-                        amt = clean_amount(results[next_idx])
-                        if amt > 0:
-                            op_val = amt
-                            break
-                            
-                # Rule 3: Denomination Total
-                if "total" in t_low and ("cash" in all_text_str or "denomination" in all_text_str):
-                    for next_idx in range(idx + 1, min(idx + 4, len(results))):
-                        amt = clean_amount(results[next_idx])
-                        if amt > 0:
-                            denom_val = amt
-                            break
+                # Exclude header fields
+                if any(x in t_low for x in ["closing", "deposit", "diffrence", "difference", "approval amount", "excess"]):
+                    continue
                 
-                # Keyword categorizations
-                nums = re.findall(r"[\d,]+\.?\d*", text)
-                amt = clean_amount(nums[-1]) if nums else 0.0
-                if amt == 0 and idx + 1 < len(results):
-                    amt = clean_amount(results[idx + 1])
+                # Check for approval amount
+                amt = clean_amount(text)
+                if amt is None or amt == 0:
+                    continue
 
-                if amt > 0:
-                    if any(k in t_low for k in ["pavan", "santhosh", "sharan"]):
-                        ksp_approvals.append(amt)
-                    elif any(k in t_low for k in ["admin", "mallesh", "shiva", "khan", "naresh", "coo", "asm", "javeed", "trade license", "add ins", "addins"]):
-                        pending_apprvls.append(amt)
-                    elif any(k in t_low for k in ["bajaj", "idfc", "cash back", "cash to card", "upi", "dbd"]):
-                        finance_amnt.append(amt)
-                    elif any(k in t_low for k in ["srn", "sr", "sale return", "doa"]):
-                        sr_list.append(amt)
-                    elif "extra items" in t_low:
-                        edits_list.append(amt)
+                if any(k in t_low for k in ["pavan", "santhosh", "sharan"]):
+                    ksp_approvals.append(amt)
+                elif any(k in t_low for k in ["admin", "mallesh", "shiva", "khan", "naresh", "coo", "asm", "javeed", "trade license"]):
+                    pending_apprvls.append(amt)
+                elif any(k in t_low for k in ["bajaj", "idfc", "cash back", "cash to card", "upi", "dbd"]):
+                    finance_amnt.append(amt)
+                elif any(k in t_low for k in ["srn", "sr", "sale return", "doa"]):
+                    sr_list.append(amt)
+                elif "extra items" in t_low:
+                    edits_list.append(amt)
 
             store_data_map[matched_branch] = {
                 "OPENING BALANCE": op_val,
@@ -224,8 +247,3 @@ if uploaded_files:
         file_name="HO_MASTER_CASHBOOK_REPORT.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
-
-    with st.expander("🔍 View Raw AI OCR Text"):
-        for fn, raw in ocr_debug_logs.items():
-            st.write(f"**{fn}**")
-            st.write(raw)
