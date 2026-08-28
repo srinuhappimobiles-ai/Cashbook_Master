@@ -18,7 +18,7 @@ st.markdown("""
 
 st.markdown('<div class="header-style">🏢 HAPPI MOBILES - HEAD OFFICE MASTER CASHBOOK AUTOMATION</div>', unsafe_allow_html=True)
 
-# Default Master Store List extracted from official Cashbook Report
+# Default Master Store List
 DEFAULT_BRANCHES = [
     {"CODE": "ADBD", "BRANCH": "ADILABAD"}, {"CODE": "AMP", "BRANCH": "AMALAPURAM"},
     {"CODE": "AMPT", "BRANCH": "AMEERPET"}, {"CODE": "ANTP", "BRANCH": "ANANTAPUR"},
@@ -76,9 +76,15 @@ DEFAULT_BRANCHES = [
     {"CODE": "ZB", "BRANCH": "ZAHEERABAD"}
 ]
 
-# Initialize Session State for dynamic store management
+# Initialize Persistent Session States
 if "branch_list" not in st.session_state:
     st.session_state.branch_list = sorted(DEFAULT_BRANCHES, key=lambda x: x["BRANCH"].upper())
+
+if "persistent_ho_balances" not in st.session_state:
+    st.session_state.persistent_ho_balances = {}
+
+if "persistent_store_data" not in st.session_state:
+    st.session_state.persistent_store_data = {}
 
 # Section: Add New Store dynamically
 with st.expander("➕ Add New Store to Master"):
@@ -146,8 +152,7 @@ with col1:
 with col2:
     uploaded_files = st.file_uploader("📥 2. Select Store Cashbook Screenshots", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
 
-# 1. Process Head Office Dr Balance Dump file accurately with ROUND OFF
-ho_opening_balances = {}
+# 1. Process and permanently store Head Office Dr Balance Dump file
 if ho_dump_file:
     try:
         if ho_dump_file.name.endswith(".csv"):
@@ -173,7 +178,6 @@ if ho_dump_file:
         for idx, row in df_dump.iterrows():
             b_val = normalize_name(row[branch_col])
             raw_amt = row[bal_col]
-            # Round off Dr balance to nearest integer
             clean_amt = extract_number(raw_amt, round_val=True)
             if b_val and clean_amt is not None:
                 dump_dict[b_val] = clean_amt
@@ -183,19 +187,17 @@ if ho_dump_file:
             b_code_norm = normalize_name(b["CODE"])
 
             if b_norm in dump_dict:
-                ho_opening_balances[b["BRANCH"]] = dump_dict[b_norm]
+                st.session_state.persistent_ho_balances[b["BRANCH"]] = dump_dict[b_norm]
             elif b_code_norm in dump_dict:
-                ho_opening_balances[b["BRANCH"]] = dump_dict[b_code_norm]
+                st.session_state.persistent_ho_balances[b["BRANCH"]] = dump_dict[b_code_norm]
 
-        st.success(f"✅ HO Dump Processed: {len(ho_opening_balances)} stores Dr Balance rounded off and mapped perfectly!")
+        st.success(f"✅ HO Dump Stored Permanently: {len(st.session_state.persistent_ho_balances)} stores Dr Balance saved!")
     except Exception as e:
         st.error(f"Error reading HO Dump file: {e}")
 
-# 2. Process Store Screenshots for remaining fields
-store_data_map = {}
-
+# 2. Process and permanently store screenshots data
 if uploaded_files:
-    with st.spinner("Processing screenshots and mapping data based on rules..."):
+    with st.spinner("Processing screenshots and permanently storing mapped data..."):
         for file in uploaded_files:
             image = Image.open(file)
             img_np = np.array(image)
@@ -275,23 +277,19 @@ if uploaded_files:
                                 break
 
                     if amt and amt > 0:
-                        # Rule 11: (KSP)'Sir's Approvals
                         if any(k in left_text for k in ["pavan", "santhosh", "sharan"]):
                             ksp_approvals.append(amt)
-                        # Rule 5: Pending Apprvls
                         elif any(k in left_text for k in ["admin", "mallesh", "shiva", "khan", "naresh", "coo", "asm", "javeed", "trade license"]):
                             pending_apprvls.append(amt)
-                        # Rule 6: Finance Amnt
                         elif any(k in left_text for k in ["bajaj", "idfc", "cash back", "cashback", "cash to card", "upi", "dbd"]):
                             finance_amnt.append(amt)
-                        # Rule 7: SR
                         elif any(k in left_text for k in ["srn", "sr", "sale return", "sales return", "doa"]):
                             sr_list.append(amt)
-                        # Rule 9: Edits
                         elif "extra items" in left_text:
                             edits_list.append(amt)
 
-            store_data_map[matched_branch] = {
+            # Save permanently into Session State
+            st.session_state.persistent_store_data[matched_branch] = {
                 "DENOMINATION": denom_val,
                 "PENDING APPRVLS": format_excel_formula(pending_apprvls),
                 "FINANCE AMNT": format_excel_formula(finance_amnt),
@@ -300,13 +298,12 @@ if uploaded_files:
                 "(KSP)'Sir's Approvals": format_excel_formula(ksp_approvals)
             }
 
-# Build Master DataFrame with 1-based sequential serial numbers
+# Build Master DataFrame from Persistent State
 final_rows = []
 for idx, b in enumerate(st.session_state.branch_list, start=1):
     b_name = b["BRANCH"]
-    d = store_data_map.get(b_name, {})
-    
-    opening_bal = ho_opening_balances.get(b_name, "")
+    d = st.session_state.persistent_store_data.get(b_name, {})
+    opening_bal = st.session_state.persistent_ho_balances.get(b_name, "")
     
     final_rows.append({
         "Sl.No.": idx,
@@ -331,7 +328,7 @@ df_master = pd.DataFrame(final_rows)
 
 # Interactive Editable Table
 st.subheader(f"📋 Head Office Master Cashbook ({len(st.session_state.branch_list)} Stores)")
-st.info("💡 **Note:** You can double-click any cell to edit values or type manual entries like DEPOSIT, AddinGS, and REMARKS directly.")
+st.info("💡 **Note:** All uploaded Excel dump Dr Balances and Store Screenshot data are permanently retained even if you clear the upload boxes. You can edit cells freely.")
 
 edited_df = st.data_editor(
     df_master,
@@ -341,15 +338,26 @@ edited_df = st.data_editor(
     num_rows="fixed"
 )
 
-# Export edited data to Excel
-output = io.BytesIO()
-with pd.ExcelWriter(output, engine='openpyxl') as writer:
-    edited_df.to_excel(writer, index=False, sheet_name='MASTER REPORT')
-excel_data = output.getvalue()
+# Export and Reset options
+c_down, c_reset = st.columns([4, 1])
 
-st.download_button(
-    label="📥 Download Master Excel Sheet (With Your Edits)",
-    data=excel_data,
-    file_name="HO_MASTER_CASHBOOK_REPORT.xlsx",
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
+with c_down:
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        edited_df.to_excel(writer, index=False, sheet_name='MASTER REPORT')
+    excel_data = output.getvalue()
+
+    st.download_button(
+        label="📥 Download Master Excel Sheet (With Your Edits)",
+        data=excel_data,
+        file_name="HO_MASTER_CASHBOOK_REPORT.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
+
+with c_reset:
+    if st.button("🗑️ Reset / Clear All Data", use_container_width=True):
+        st.session_state.persistent_ho_balances = {}
+        st.session_state.persistent_store_data = {}
+        st.success("All data cleared successfully!")
+        st.rerun()
