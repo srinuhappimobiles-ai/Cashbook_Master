@@ -82,6 +82,9 @@ reader = load_ocr()
 def extract_number(text_val):
     if not text_val:
         return None
+    # Filter out dates like 25-08-2026 or parts of dates
+    if re.search(r"\d{2}-\d{2}-\d{4}", str(text_val)):
+        return None
     clean = str(text_val).replace(",", "").strip()
     match = re.search(r"(\d+\.?\d*)", clean)
     if match:
@@ -119,7 +122,6 @@ if uploaded_files:
                 file_clean = file.name.lower().replace(" ", "").replace("-", "").replace("_", "")
                 full_clean = full_text.replace(" ", "").replace("-", "")
                 
-                # Check branch code (e.g., WGL 1 -> WARANGAL)
                 if file_clean.startswith(b_code_clean) or b_name_clean in file_clean:
                     matched_branch = b["BRANCH"]
                     break
@@ -130,14 +132,13 @@ if uploaded_files:
             if not matched_branch:
                 continue
 
-            # Organize detections into rows based on Y coordinates
+            # Group items into rows
             boxes = []
             for bbox, text, conf in ocr_results:
                 cx = (bbox[0][0] + bbox[1][0]) / 2
                 cy = (bbox[0][1] + bbox[2][1]) / 2
                 boxes.append({"x": cx, "y": cy, "text": text.strip()})
 
-            # Cluster items into rows (items within 18px Y-distance are in the same row)
             boxes.sort(key=lambda b: b["y"])
             rows = []
             for b in boxes:
@@ -145,14 +146,12 @@ if uploaded_files:
                 for r in rows:
                     if abs(r["y"] - b["y"]) <= 18:
                         r["items"].append(b)
-                        # Recalculate average y
                         r["y"] = sum(i["y"] for i in r["items"]) / len(r["items"])
                         placed = True
                         break
                 if not placed:
                     rows.append({"y": b["y"], "items": [b]})
 
-            # Sort items inside each row from left to right (by X coordinate)
             for r in rows:
                 r["items"].sort(key=lambda item: item["x"])
 
@@ -165,41 +164,38 @@ if uploaded_files:
             ksp_approvals = []
 
             for r in rows:
-                row_text = " ".join([i["text"] for i in r["items"]]).lower()
-                
-                # Split row into Left Table vs Right Denomination Table
+                # Left Table vs Right Denomination Table
                 left_items = [i for i in r["items"] if i["x"] <= width * 0.68]
                 right_items = [i for i in r["items"] if i["x"] > width * 0.68]
 
-                # 1. Opening Balance (APX CLOSING BALANCE)
+                # 1. Opening Balance
                 if any("closing" in i["text"].lower() or "apx" in i["text"].lower() for i in left_items):
                     for i in left_items:
-                        # Extract the numeric value in the rightmost cell of APX CLOSING BALANCE
-                        if i["x"] > width * 0.45:
+                        if i["x"] > width * 0.50:  # Amount column
                             val = extract_number(i["text"])
                             if val is not None and val > 0:
                                 op_val = val
 
                 # 2. Denomination Total
                 if any("total" in i["text"].lower() for i in right_items):
-                    # Pick the last amount in the right table row
                     for i in reversed(right_items):
                         val = extract_number(i["text"])
                         if val is not None and val > 0:
                             denom_val = val
                             break
 
-                # 3. Approvals, Finance & Expenses
+                # 3. Line items - Strictly match AMOUNT column (X > width * 0.50)
                 left_text = " ".join([i["text"] for i in left_items]).lower()
                 
                 if not any(x in left_text for x in ["closing", "deposit", "diffrence", "difference", "total approval", "excess", "short", "approvals & sale", "add ins", "addins", "cash book"]):
-                    # Look for amounts in this line
                     amt = None
-                    for i in reversed(left_items):
-                        val = extract_number(i["text"])
-                        if val is not None and val > 0 and val != 2026: # Exclude date year
-                            amt = val
-                            break
+                    # Search exclusively in the AMOUNT column area
+                    for i in left_items:
+                        if i["x"] > width * 0.50:
+                            val = extract_number(i["text"])
+                            if val is not None and val > 0:
+                                amt = val
+                                break
 
                     if amt and amt > 0:
                         if any(k in left_text for k in ["pavan", "santhosh", "sharan"]):
