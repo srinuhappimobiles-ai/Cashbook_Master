@@ -272,7 +272,7 @@ for idx, b in enumerate(BRANCH_MASTER, start=1):
 df_master = pd.DataFrame(final_rows)
 
 st.subheader("📋 Head Office Master Cashbook (Editable)")
-st.info("💡 **సూచన:** మీరు కింద కనిపిస్తున్న టేబుల్‌లోని ఏ సెల్‌నైనా డబుల్ క్లిక్ చేసి మార్చవచ్చు లేదా కొత్త విలువలను మాన్యువల్‌గా ఎంటర్ చేయవచ్చు.")
+st.info("💡 **Note:"Below Given All Cells Are Editable")
 
 edited_df = st.data_editor(
     df_master,
