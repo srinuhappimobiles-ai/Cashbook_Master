@@ -79,14 +79,18 @@ def load_ocr():
 
 reader = load_ocr()
 
-def clean_amount(val):
-    if not val:
+def extract_number(text_val):
+    if not text_val:
         return None
-    cleaned = re.sub(r"[^\d.]", "", str(val))
-    try:
-        return float(cleaned)
-    except:
-        return None
+    # Extracts clean numbers with optional decimals (e.g. 2,129.01 -> 2129.01)
+    clean = text_val.replace(",", "").strip()
+    match = re.search(r"(\d+\.?\d*)", clean)
+    if match:
+        try:
+            return float(match.group(1))
+        except:
+            return None
+    return None
 
 def format_excel_formula(num_list):
     if not num_list:
@@ -104,12 +108,11 @@ if uploaded_files:
         for file in uploaded_files:
             image = Image.open(file)
             img_np = np.array(image)
-            width = img_np.shape[1]
+            height, width = img_np.shape[:2]
 
             ocr_results = reader.readtext(img_np)
             full_text = " ".join([r[1] for r in ocr_results]).lower()
 
-            # 1. Match Branch Name
             matched_branch = None
             for b in BRANCH_MASTER:
                 b_name_clean = b["BRANCH"].lower().replace(" ", "")
@@ -132,73 +135,71 @@ if uploaded_files:
             edits_list = []
             ksp_approvals = []
 
-            # Structure items with coordinates
-            parsed_items = []
+            # Box centers
+            boxes = []
             for bbox, text, conf in ocr_results:
-                center_x = (bbox[0][0] + bbox[1][0]) / 2
-                center_y = (bbox[0][1] + bbox[2][1]) / 2
-                parsed_items.append({"x": center_x, "y": center_y, "text": text.strip()})
+                cx = (bbox[0][0] + bbox[1][0]) / 2
+                cy = (bbox[0][1] + bbox[2][1]) / 2
+                boxes.append({"x": cx, "y": cy, "text": text.strip()})
 
-            # Separate Left Side (Cashbook) & Right Side (Denomination)
-            left_side = [it for it in parsed_items if it["x"] <= width * 0.65]
-            right_side = [it for it in parsed_items if it["x"] > width * 0.65]
+            left_side = [b for b in boxes if b["x"] <= width * 0.65]
+            right_side = [b for b in boxes if b["x"] > width * 0.65]
 
-            # 1. Find APX CLOSING BALANCE (Exact Same Row/Y-coordinate Match)
-            for it in left_side:
-                t_low = it["text"].lower()
-                if "closing" in t_low and ("apx" in t_low or "balance" in t_low):
-                    # Look for numerical text at the same vertical level (Y-coordinate ± 20px) to the right
-                    row_candidates = [
-                        c for c in left_side 
-                        if abs(c["y"] - it["y"]) < 25 and c["x"] > it["x"]
-                    ]
-                    for cand in row_candidates:
-                        amt = clean_amount(cand["text"])
-                        if amt is not None and amt > 0:
-                            op_val = amt
-                            break
+            # 1. Opening Balance: Find 'APX CLOSING BALANCE' and match right-hand numeric cell strictly on horizontal axis
+            apx_labels = [b for b in left_side if "closing" in b["text"].lower() or "apx" in b["text"].lower()]
+            if apx_labels:
+                target_y = apx_labels[0]["y"]
+                # Candidates on the right side of the label within vertical distance <= 18 pixels
+                row_nums = [
+                    b for b in left_side 
+                    if b["x"] > apx_labels[0]["x"] and abs(b["y"] - target_y) <= 18
+                ]
+                row_nums.sort(key=lambda b: b["x"])
+                for cand in row_nums:
+                    val = extract_number(cand["text"])
+                    if val is not None and val > 0:
+                        op_val = val
+                        break
 
-            # 2. Find CASH DENOMINATION TOTAL (Right side bottom total)
-            right_side.sort(key=lambda item: item["y"])
-            for idx, it in enumerate(right_side):
-                t_low = it["text"].lower()
-                if "total" in t_low:
-                    # Look in the same row or the items immediately below/adjacent
-                    row_candidates = [
-                        c for c in right_side 
-                        if abs(c["y"] - it["y"]) < 25 and c["x"] > it["x"]
-                    ]
-                    if row_candidates:
-                        denom_val = clean_amount(row_candidates[-1]["text"])
-                    else:
-                        for offset in range(1, min(4, len(right_side) - idx)):
-                            amt = clean_amount(right_side[idx + offset]["text"])
-                            if amt is not None and amt > 0:
-                                denom_val = amt
+            # 2. Denomination Total: Match Right-Hand bottom total
+            right_side.sort(key=lambda b: b["y"])
+            total_labels = [b for b in right_side if "total" in b["text"].lower()]
+            if total_labels:
+                target_y = total_labels[-1]["y"]
+                denom_cands = [
+                    b for b in right_side 
+                    if b["x"] > total_labels[-1]["x"] and abs(b["y"] - target_y) <= 20
+                ]
+                if denom_cands:
+                    denom_val = extract_number(denom_cands[-1]["text"])
+                else:
+                    for b in right_side:
+                        if b["y"] >= target_y - 5:
+                            val = extract_number(b["text"])
+                            if val is not None and val > 0:
+                                denom_val = val
 
             # 3. Categorize Approvals & Expenses in Left Side
-            for it in left_side:
-                t_low = it["text"].lower()
+            for b in left_side:
+                t_low = b["text"].lower()
                 
-                # Exclude standard headers and summary lines
-                if any(x in t_low for x in ["closing", "deposit", "diffrence", "difference", "total approval", "excess", "short", "approvals & sale"]):
+                if any(x in t_low for x in ["closing", "deposit", "diffrence", "difference", "total approval", "excess", "short", "approvals & sale", "add ins", "addins"]):
                     continue
 
-                # Find amount in the same row
-                row_candidates = [
-                    c for c in left_side 
-                    if abs(c["y"] - it["y"]) < 25 and c["x"] > it["x"]
+                row_cands = [
+                    cand for cand in left_side 
+                    if cand["x"] > b["x"] and abs(cand["y"] - b["y"]) <= 18
                 ]
                 
                 amt = None
-                for cand in row_candidates:
-                    val = clean_amount(cand["text"])
+                for cand in row_cands:
+                    val = extract_number(cand["text"])
                     if val is not None and val > 0:
                         amt = val
                         break
 
                 if not amt:
-                    amt = clean_amount(it["text"])
+                    amt = extract_number(b["text"])
 
                 if amt and amt > 0:
                     if any(k in t_low for k in ["pavan", "santhosh", "sharan"]):
