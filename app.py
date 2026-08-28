@@ -1,13 +1,12 @@
 import streamlit as st
 import pandas as pd
-from PIL import Image
+from PIL import Image, ImageEnhance, ImageFilter
 import pytesseract
 import re
 import io
 
 st.set_page_config(page_title="Happi Cashbook Master", layout="wide")
 
-# Custom UI Styling
 st.markdown("""
     <style>
     .header-style { font-size: 24px; font-weight: bold; color: #0E4C92; margin-bottom: 15px; }
@@ -74,7 +73,15 @@ BRANCH_MASTER = [
     {"CODE": "ZB", "BRANCH": "ZAHEERABAD"}
 ]
 
-# Helper function to format multiple numbers as Excel formula (=500+300)
+def clean_amount(val):
+    if not val:
+        return 0.0
+    val_clean = re.sub(r"[^\d.]", "", str(val))
+    try:
+        return float(val_clean)
+    except:
+        return 0.0
+
 def format_excel_formula(num_list):
     if not num_list:
         return ""
@@ -82,69 +89,76 @@ def format_excel_formula(num_list):
         return num_list[0]
     return "=" + "+".join([str(x) for x in num_list])
 
-uploaded_files = st.file_uploader("📥 Select All Store Cashbook Screenshots", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
+uploaded_files = st.file_uploader("📥 Select Store Cashbook Screenshots", type=["png", "jpg", "jpeg"], accept_multiple_files=True)
 
 if uploaded_files:
     store_data_map = {}
-    
-    with st.spinner("Processing screenshots and mapping data according to rules..."):
+    ocr_debug_logs = {}
+
+    with st.spinner("Extracting and mapping data..."):
         for file in uploaded_files:
-            img = Image.open(file)
-            raw_text = pytesseract.image_to_string(img)
-            lines = raw_text.split("\n")
+            img = Image.open(file).convert('L') # Convert to grayscale for better OCR
+            img = ImageEnhance.Contrast(img).enhance(1.8)
             
-            # Identify Branch Name
+            raw_text = pytesseract.image_to_string(img, config='--psm 6')
+            if not raw_text.strip():
+                raw_text = pytesseract.image_to_string(img)
+                
+            ocr_debug_logs[file.name] = raw_text
+            
+            # Match Branch Name from text or filename
             matched_branch = None
             for b in BRANCH_MASTER:
-                clean_bname = b["BRANCH"].replace(" ", "").lower()
-                clean_raw = raw_text.replace(" ", "").lower()
-                if clean_bname in clean_raw:
+                b_name_clean = b["BRANCH"].replace(" ", "").lower()
+                b_code_clean = b["CODE"].lower()
+                file_name_clean = file.name.replace(" ", "").lower()
+                text_clean = raw_text.replace(" ", "").lower()
+                
+                if b_name_clean in file_name_clean or b_code_clean == file_name_clean.split('.')[0]:
                     matched_branch = b["BRANCH"]
                     break
-            
+                elif b_name_clean in text_clean:
+                    matched_branch = b["BRANCH"]
+                    break
+
             if not matched_branch:
                 continue
-            
-            # Rule 1 & Rule 3: Opening Balance & Denomination Extraction
-            op_match = re.search(r"APX\s*CLOSING\s*BALANCE.*?(\d+[\d,.]*)", raw_text, re.I)
-            denom_match = re.search(r"TOTAL\s+(\d+)\s+(\d+[\d,.]*)", raw_text, re.I)
-            
-            op_val = float(op_match.group(1).replace(",", "")) if op_match else ""
-            denom_val = float(denom_match.group(2).replace(",", "")) if denom_match else ""
-            
-            # Rule Buckets
+
+            # Extract APX Closing Balance
+            op_match = re.search(r"CLOSING\s*BALANCE.*?([\d,]+\.?\d*)", raw_text, re.I)
+            op_val = clean_amount(op_match.group(1)) if op_match else ""
+
+            # Extract Cash Denomination Total
+            denom_match = re.search(r"TOTAL.*?([\d,]+)", raw_text, re.I)
+            denom_val = clean_amount(denom_match.group(1)) if denom_match else ""
+
             pending_apprvls = []
             finance_amnt = []
             sr_list = []
             edits_list = []
             ksp_approvals = []
-            
-            # Line-by-line categorization
+
+            # Process lines
+            lines = raw_text.split("\n")
             for line in lines:
                 l_lower = line.lower()
-                amt_match = re.search(r"(\d+[\d,.]*)$", line.strip())
-                amt = float(amt_match.group(1).replace(",", "")) if amt_match else None
                 
-                if not amt or amt == 0:
+                # Extract any numeric value present in line
+                nums = re.findall(r"[\d,]+\.?\d*", line)
+                if not nums:
                     continue
-                
-                # Rule 11: (KSP)'Sir's Approvals
+                amt = clean_amount(nums[-1])
+                if amt == 0:
+                    continue
+
                 if any(k in l_lower for k in ["pavan", "santhosh", "sharan"]):
                     ksp_approvals.append(amt)
-                
-                # Rule 5: Pending Apprvls
                 elif any(k in l_lower for k in ["admin work", "mallesh", "shiva", "khan", "naresh", "coo", "asm", "javeed", "trade license"]):
                     pending_apprvls.append(amt)
-                    
-                # Rule 6: Finance Amnt
                 elif any(k in l_lower for k in ["bajaj", "idfc", "cash back", "cash to card", "upi", "dbd"]):
                     finance_amnt.append(amt)
-                    
-                # Rule 7: SR
                 elif any(k in l_lower for k in ["srn", "sr", "sale return", "doa"]):
                     sr_list.append(amt)
-                    
-                # Rule 9: Edits
                 elif "extra items" in l_lower:
                     edits_list.append(amt)
 
@@ -158,7 +172,7 @@ if uploaded_files:
                 "(KSP)'Sir's Approvals": format_excel_formula(ksp_approvals)
             }
 
-    # Construct Master Dataframe
+    # Construct Master Table
     final_rows = []
     for idx, b in enumerate(BRANCH_MASTER, start=1):
         b_name = b["BRANCH"]
@@ -199,3 +213,9 @@ if uploaded_files:
         file_name="HO_MASTER_CASHBOOK_REPORT.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
+    # Debug Section to verify OCR Text
+    with st.expander("🔍 View Raw OCR Extracted Text (For Debugging)"):
+        for fn, raw in ocr_debug_logs.items():
+            st.write(f"**{fn}**")
+            st.code(raw)
