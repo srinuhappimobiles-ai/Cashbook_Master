@@ -8,17 +8,16 @@ import pandas as pd
 from PIL import Image
 import pytesseract
 import streamlit as st
-import streamlit.components.v1 as components
 
 st.set_page_config(page_title="Happi Cashbook Master", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
     <style>
     .block-container { 
-        padding-top: 0.5rem !important; 
+        padding-top: 0.8rem !important; 
         padding-bottom: 0rem !important; 
-        padding-left: 1rem !important; 
-        padding-right: 1rem !important; 
+        padding-left: 1.2rem !important; 
+        padding-right: 1.2rem !important; 
         max-width: 100% !important;
     }
     header {visibility: hidden !important;}
@@ -28,13 +27,12 @@ st.markdown("""
         font-size: 18px; 
         font-weight: 700; 
         color: #0E4C92; 
-        margin-bottom: 4px; 
+        margin-bottom: 8px; 
         display: flex; 
         align-items: center; 
         gap: 8px; 
     }
     .stSidebar { background-color: #f8fafc; }
-    iframe { height: calc(100vh - 65px) !important; width: 100% !important; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -114,8 +112,7 @@ def load_db():
         "ho_balances": {},
         "addins_data": {},
         "store_data": {},
-        "manual_edits": {},
-        "sheet_matrix": {}
+        "manual_edits": {}
     }
 
 def save_db(data):
@@ -123,8 +120,6 @@ def save_db(data):
         json.dump(data, f, indent=2)
 
 db = load_db()
-if "sheet_matrix" not in db:
-    db["sheet_matrix"] = {}
 
 def format_excel_formula(num_list):
     if not num_list:
@@ -283,7 +278,6 @@ with st.sidebar:
     if st.button("🧹 Reset All Store Records", use_container_width=True):
         db["store_data"] = {}
         db["manual_edits"] = {}
-        db["sheet_matrix"] = {}
         save_db(db)
         st.rerun()
 
@@ -382,6 +376,40 @@ col_head1, col_head2 = st.columns([3.5, 1])
 with col_head1:
     st.markdown(f'<div class="main-title">📊 HAPPI MOBILES - MASTER CASHBOOK WORKSPACE <span style="font-size: 13px; color: #64748b; font-weight: normal;">({len(selected_branches)} Stores Active)</span></div>', unsafe_allow_html=True)
 
+# Build Dynamic Matrix with Auto-Calculating Closing Balance
+final_rows = []
+for idx, b in enumerate(selected_branches, start=1):
+    b_name = b["BRANCH"]
+    d = db["store_data"].get(b_name, {})
+    opening_bal = db["ho_balances"].get(b_name, "")
+    addins_val = db["addins_data"].get(b_name, "")
+    manual = db["manual_edits"].get(b_name, {})
+
+    # Auto calculate Excel Formula: =D2-SUM(E2:N2)
+    excel_row_num = idx + 1
+    default_closing_formula = f"=D{excel_row_num}-SUM(E{excel_row_num}:N{excel_row_num})"
+
+    final_rows.append({
+        "Sl.No.": idx,
+        "CODE": b["CODE"],
+        "BRANCH": b["BRANCH"],
+        "OPENING BALANCE": manual.get("OPENING BALANCE", str(opening_bal)),
+        "DEPOSIT": manual.get("DEPOSIT", ""),
+        "DENOMINATION": manual.get("DENOMINATION", str(d.get("DENOMINATION", ""))),
+        "AddinGS": manual.get("AddinGS", str(addins_val)),
+        "PENDING APPRVLS": manual.get("PENDING APPRVLS", str(d.get("PENDING APPRVLS", ""))),
+        "FINANCE AMNT": manual.get("FINANCE AMNT", str(d.get("FINANCE AMNT", ""))),
+        "SR": manual.get("SR", str(d.get("SR", ""))),
+        "SWEEPER SALARY": manual.get("SWEEPER SALARY", ""),
+        "EDITS": manual.get("EDITS", str(d.get("EDITS", ""))),
+        "APX SHORTAGE": manual.get("APX SHORTAGE", ""),
+        "(KSP)'Sir's Approvals": manual.get("(KSP)'Sir's Approvals", str(d.get("(KSP)'Sir's Approvals", ""))),
+        "CLOSING BALANCE": manual.get("CLOSING BALANCE", default_closing_formula),
+        "REMARKS": manual.get("REMARKS", "")
+    })
+
+df_master = pd.DataFrame(final_rows)
+
 with col_head2:
     all_rows_export = []
     for idx, b in enumerate(db["branches"], start=1):
@@ -390,6 +418,8 @@ with col_head2:
         opening_bal = db["ho_balances"].get(b_name, "")
         addins_val = db["addins_data"].get(b_name, "")
         manual = db["manual_edits"].get(b_name, {})
+        excel_row_num = idx + 1
+        default_closing_formula = f"=D{excel_row_num}-SUM(E{excel_row_num}:N{excel_row_num})"
 
         all_rows_export.append({
             "Sl.No.": idx,
@@ -406,7 +436,7 @@ with col_head2:
             "EDITS": manual.get("EDITS", str(d.get("EDITS", ""))),
             "APX SHORTAGE": manual.get("APX SHORTAGE", ""),
             "(KSP)'Sir's Approvals": manual.get("(KSP)'Sir's Approvals", str(d.get("(KSP)'Sir's Approvals", "")) ),
-            "CLOSING BALANCE": manual.get("CLOSING BALANCE", ""),
+            "CLOSING BALANCE": manual.get("CLOSING BALANCE", default_closing_formula),
             "REMARKS": manual.get("REMARKS", "")
         })
 
@@ -424,117 +454,38 @@ with col_head2:
         use_container_width=True
     )
 
-# --- PREPARE PERSISTENT EXCEL GRID WITH AUTO-GENERATED FORMULAS ---
-headers = [
-    "SL.No.", "CODE", "BRANCH", "OPENING BALANCE", "DEPOSIT", "DENOMINATION", 
-    "AddinGS", "PENDING APPRVLS", "FINANCE AMNT", "SR", "SWEEPER SALARY", 
-    "EDITS", "APX SHORTAGE", "(KSP)'Sir's Approvals", "CLOSING BALANCE", "REMARKS"
-]
-
-celldata = []
-
-# Row 0: Headers
-for c_idx, h_text in enumerate(headers):
-    celldata.append({
-        "r": 0, "c": c_idx,
-        "v": { "v": h_text, "m": h_text, "bg": "#1e7082", "fc": "#ffffff", "bl": 1, "ht": 0, "vt": 0 }
-    })
-
-# Row 1 to N: Store Data with Native Closing Balance Formula (=D2-SUM(E2:N2))
-for r_idx, b in enumerate(selected_branches, start=1):
-    b_name = b["BRANCH"]
-    d = db["store_data"].get(b_name, {})
-    opening_bal = db["ho_balances"].get(b_name, "")
-    addins_val = db["addins_data"].get(b_name, "")
-    manual = db["manual_edits"].get(b_name, {})
-    
-    excel_row_num = r_idx + 1  # Row index in Excel (Row 2, Row 3...)
-    default_closing_formula = f"=D{excel_row_num}-SUM(E{excel_row_num}:N{excel_row_num})"
-
-    row_vals = [
-        str(r_idx),
-        b["CODE"],
-        b["BRANCH"],
-        str(manual.get("OPENING BALANCE", str(opening_bal))),
-        str(manual.get("DEPOSIT", "")),
-        str(manual.get("DENOMINATION", str(d.get("DENOMINATION", "")))),
-        str(manual.get("AddinGS", str(addins_val))),
-        str(manual.get("PENDING APPRVLS", str(d.get("PENDING APPRVLS", "")))),
-        str(manual.get("FINANCE AMNT", str(d.get("FINANCE AMNT", "")))),
-        str(manual.get("SR", str(d.get("SR", "")))),
-        str(manual.get("SWEEPER SALARY", "")),
-        str(manual.get("EDITS", str(d.get("EDITS", "")))),
-        str(manual.get("APX SHORTAGE", "")),
-        str(manual.get("(KSP)'Sir's Approvals", str(d.get("(KSP)'Sir's Approvals", "")))),
-        manual.get("CLOSING BALANCE", default_closing_formula),
-        str(manual.get("REMARKS", ""))
+# --- NATIVE FULL PERSISTENT DATA GRID ---
+column_config = {
+    col: st.column_config.TextColumn(col)
+    for col in [
+        "OPENING BALANCE", "DEPOSIT", "DENOMINATION", "AddinGS", "PENDING APPRVLS",
+        "FINANCE AMNT", "SR", "SWEEPER SALARY", "EDITS", "APX SHORTAGE",
+        "(KSP)'Sir's Approvals", "CLOSING BALANCE", "REMARKS"
     ]
+}
 
-    for c_idx, val in enumerate(row_vals):
-        if val:
-            cell_obj = {"r": r_idx, "c": c_idx, "v": {}}
-            if str(val).startswith("="):
-                cell_obj["v"]["f"] = str(val)
-            else:
-                try:
-                    num = float(str(val).replace(",", ""))
-                    cell_obj["v"]["v"] = int(round(num)) if num.is_integer() else num
-                    cell_obj["v"]["ct"] = {"fa": "General", "t": "n"}
-                except:
-                    cell_obj["v"]["v"] = str(val)
-                    cell_obj["v"]["ct"] = {"fa": "General", "t": "g"}
-            celldata.append(cell_obj)
+edited_df = st.data_editor(
+    df_master,
+    use_container_width=True,
+    height=800,
+    disabled=["Sl.No.", "CODE", "BRANCH"],
+    column_config=column_config,
+    num_rows="fixed",
+    key=f"persistent_cashbook_{work_mode}_{len(selected_branches)}"
+)
 
-luckysheet_html = f"""
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8" />
-    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/plugins/css/pluginsCss.css' />
-    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/plugins/plugins.css' />
-    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/css/luckysheet.css' />
-    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/assets/iconfont/iconfont.css' />
-    <script src="https://cdn.jsdelivr.net/npm/luckysheet/dist/plugins/js/plugin.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/luckysheet/dist/luckysheet.umd.js"></script>
-    <style>
-        html, body {{ margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }}
-        #luckysheet {{ margin: 0px; padding: 0px; position: absolute; width: 100%; height: 100%; left: 0px; top: 0px; }}
-    </style>
-</head>
-<body>
-    <div id="luckysheet"></div>
-    <script>
-        $(function () {{
-            const baseData = {json.dumps(celldata)};
+# REAL-TIME INSTANT SYNC TO SERVER DISK
+changes_made = False
+for idx, row in edited_df.iterrows():
+    b_name = row["BRANCH"]
+    if b_name not in db["manual_edits"]:
+        db["manual_edits"][b_name] = {}
 
-            luckysheet.create({{
-                container: 'luckysheet',
-                showinfobar: false,
-                showsheetbar: false,
-                showstatisticBar: true,
-                enableAddRow: false,
-                enableAddBackTop: false,
-                data: [{{
-                    "name": "MASTER REPORT",
-                    "status": 1,
-                    "order": 0,
-                    "data": [],
-                    "config": {{
-                        "columnlen": {{
-                            "0": 55, "1": 75, "2": 150, "3": 130, "4": 90, "5": 110,
-                            "6": 100, "7": 130, "8": 110, "9": 90, "10": 120, "11": 90,
-                            "12": 110, "13": 140, "14": 130, "15": 120
-                        }}
-                    }},
-                    "celldata": baseData,
-                    "row": {len(selected_branches) + 5},
-                    "column": 18
-                }}]
-            }});
-        }});
-    </script>
-</body>
-</html>
-"""
+    for col in ["OPENING BALANCE", "DEPOSIT", "DENOMINATION", "AddinGS", "PENDING APPRVLS", "FINANCE AMNT", "SR", "SWEEPER SALARY", "EDITS", "APX SHORTAGE", "(KSP)'Sir's Approvals", "CLOSING BALANCE", "REMARKS"]:
+        val_str = str(row[col]) if pd.notna(row[col]) else ""
+        if db["manual_edits"][b_name].get(col) != val_str:
+            db["manual_edits"][b_name][col] = val_str
+            changes_made = True
 
-components.html(luckysheet_html, height=890)
+if changes_made:
+    save_db(db)
