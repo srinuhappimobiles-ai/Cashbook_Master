@@ -395,12 +395,7 @@ if uploaded_files:
             if matched_branch:
                 process_cashbook_image(image, matched_branch)
 
-# --- CONVERT VALUES ---
-def prepare_cell_value(val):
-    if not val:
-        return ""
-    return str(val).strip()
-
+# --- PREPARE DATA ---
 headers = [
     "Sl.No.", "CODE", "BRANCH", "OPENING BALANCE", "DEPOSIT", "DENOMINATION", 
     "AddinGS", "PENDING APPRVLS", "FINANCE AMNT", "SR", "SWEEPER SALARY", 
@@ -419,25 +414,25 @@ for idx, b in enumerate(selected_branches, start=1):
         str(idx),
         b["CODE"],
         b["BRANCH"],
-        prepare_cell_value(manual.get("OPENING BALANCE", str(opening_bal))),
-        prepare_cell_value(manual.get("DEPOSIT", "")),
-        prepare_cell_value(manual.get("DENOMINATION", str(d.get("DENOMINATION", "")))),
-        prepare_cell_value(manual.get("AddinGS", str(addins_val))),
-        prepare_cell_value(manual.get("PENDING APPRVLS", str(d.get("PENDING APPRVLS", "")))),
-        prepare_cell_value(manual.get("FINANCE AMNT", str(d.get("FINANCE AMNT", "")))),
-        prepare_cell_value(manual.get("SR", str(d.get("SR", "")))),
-        prepare_cell_value(manual.get("SWEEPER SALARY", "")),
-        prepare_cell_value(manual.get("EDITS", str(d.get("EDITS", "")))),
-        prepare_cell_value(manual.get("APX SHORTAGE", "")),
-        prepare_cell_value(manual.get("(KSP)'Sir's Approvals", str(d.get("(KSP)'Sir's Approvals", "")))),
-        prepare_cell_value(manual.get("CLOSING BALANCE", "")),
-        manual.get("REMARKS", "")
+        str(manual.get("OPENING BALANCE", str(opening_bal))),
+        str(manual.get("DEPOSIT", "")),
+        str(manual.get("DENOMINATION", str(d.get("DENOMINATION", "")))),
+        str(manual.get("AddinGS", str(addins_val))),
+        str(manual.get("PENDING APPRVLS", str(d.get("PENDING APPRVLS", "")))),
+        str(manual.get("FINANCE AMNT", str(d.get("FINANCE AMNT", "")))),
+        str(manual.get("SR", str(d.get("SR", "")))),
+        str(manual.get("SWEEPER SALARY", "")),
+        str(manual.get("EDITS", str(d.get("EDITS", "")))),
+        str(manual.get("APX SHORTAGE", "")),
+        str(manual.get("(KSP)'Sir's Approvals", str(d.get("(KSP)'Sir's Approvals", "")))),
+        str(manual.get("CLOSING BALANCE", "")),
+        str(manual.get("REMARKS", ""))
     ]
     grid_rows.append(row_data)
 
 st.subheader(f"📊 Head Office Master Cashbook ({len(selected_branches)} Stores Shown)")
 
-# Robust Full Formula-Engine Grid
+# Complete Excel-Engine with Formula Bar & Click Selection
 hot_html = f"""
 <!DOCTYPE html>
 <html>
@@ -446,15 +441,24 @@ hot_html = f"""
     <script src="https://cdn.jsdelivr.net/npm/handsontable/dist/handsontable.full.min.js"></script>
     <style>
         body {{ margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }}
-        #excelGrid {{ width: 100%; height: 530px; overflow: hidden; font-size: 13px; }}
+        #formulaBarContainer {{ display: flex; align-items: center; background: #f8f9fa; border: 1px solid #ddd; padding: 5px 8px; margin-bottom: 6px; }}
+        #cellAddress {{ width: 60px; font-weight: bold; color: #0E4C92; border-right: 1px solid #ccc; padding-right: 8px; text-align: center; }}
+        #formulaInput {{ flex-grow: 1; border: none; outline: none; background: transparent; padding-left: 10px; font-size: 13px; font-family: monospace; }}
+        #excelGrid {{ width: 100%; height: 500px; overflow: hidden; font-size: 13px; }}
         .handsontable th {{ background-color: #0E4C92 !important; color: white !important; font-weight: bold; height: 28px; text-align: center; }}
         .handsontable td {{ font-size: 12px; }}
     </style>
 </head>
 <body>
+    <div id="formulaBarContainer">
+        <div id="cellAddress">fx</div>
+        <input type="text" id="formulaInput" placeholder="Select a cell or type formula (e.g. =SUM(D1:G1) or =D1+E1)" />
+    </div>
     <div id="excelGrid"></div>
     <script>
         const container = document.getElementById('excelGrid');
+        const formulaInput = document.getElementById('formulaInput');
+        const cellAddress = document.getElementById('cellAddress');
         let rawData = {json.dumps(grid_rows)};
         const headers = {json.dumps(headers)};
 
@@ -475,67 +479,61 @@ hot_html = f"""
             return letter;
         }}
 
-        function evaluateFormula(val, row, col, tableData) {{
+        function evaluateFormula(val, tableData) {{
             if (!val || typeof val !== 'string' || !val.startsWith('=')) return val;
             let expr = val.substring(1).trim().toUpperCase();
 
-            try {{
-                // Handle SUM(Range) or SUM(A, B, C)
-                if (expr.startsWith('SUM(') && expr.endsWith(')')) {{
-                    let inner = expr.substring(4, expr.length - 1);
-                    let sum = 0;
-                    if (inner.includes(':')) {{
-                        let parts = inner.split(':');
-                        let m1 = parts[0].match(/([A-Z]+)(\\d+)/);
-                        let m2 = parts[1].match(/([A-Z]+)(\\d+)/);
-                        if (m1 && m2) {{
-                            let startCol = colLetterToIndex(m1[1]);
-                            let startRow = parseInt(m1[2]) - 1;
-                            let endCol = colLetterToIndex(m2[1]);
-                            let endRow = parseInt(m2[2]) - 1;
+            // Auto-complete unclosed SUM(
+            if (expr.startsWith('SUM(') && !expr.endsWith(')')) {{
+                expr = expr + ')';
+            }}
 
-                            for (let r = Math.min(startRow, endRow); r <= Math.max(startRow, endRow); r++) {{
-                                for (let c = Math.min(startCol, endCol); c <= Math.max(startCol, endCol); c++) {{
-                                    if (tableData[r] && tableData[r][c] !== undefined) {{
-                                        let cellVal = evaluateFormula(tableData[r][c], r, c, tableData);
-                                        let num = parseFloat(String(cellVal).replace(/,/g, ''));
-                                        if (!isNaN(num)) sum += num;
-                                    }}
-                                }}
+            try {{
+                // Handle SUM(Range) like SUM(D1:G1)
+                expr = expr.replace(/SUM\\(([A-Z]+)(\\d+):([A-Z]+)(\\d+)\\)/g, function(match, c1, r1, c2, r2) {{
+                    let startCol = colLetterToIndex(c1);
+                    let startRow = parseInt(r1) - 1;
+                    let endCol = colLetterToIndex(c2);
+                    let endRow = parseInt(r2) - 1;
+                    let sum = 0;
+                    for (let r = Math.min(startRow, endRow); r <= Math.max(startRow, endRow); r++) {{
+                        for (let c = Math.min(startCol, endCol); c <= Math.max(startCol, endCol); c++) {{
+                            if (tableData[r] && tableData[r][c] !== undefined) {{
+                                let cVal = evaluateFormula(tableData[r][c], tableData);
+                                let num = parseFloat(String(cVal).replace(/,/g, ''));
+                                if (!isNaN(num)) sum += num;
                             }}
-                            return sum;
                         }}
                     }}
-                }}
+                    return sum;
+                }});
 
-                // Handle cell references like D1 + E1 - F1
+                // Handle single cell references like D1, E1
                 let resolved = expr.replace(/([A-Z]+)(\\d+)/g, function(match, colStr, rowStr) {{
                     let c = colLetterToIndex(colStr);
                     let r = parseInt(rowStr) - 1;
                     if (tableData[r] && tableData[r][c] !== undefined) {{
-                        let cellVal = evaluateFormula(tableData[r][c], r, c, tableData);
-                        let num = parseFloat(String(cellVal).replace(/,/g, ''));
+                        let cVal = evaluateFormula(tableData[r][c], tableData);
+                        let num = parseFloat(String(cVal).replace(/,/g, ''));
                         return isNaN(num) ? 0 : num;
                     }}
                     return 0;
                 }});
 
-                // Math eval safely
                 if (/^[0-9+\\-*\\/().\\s]+$/.test(resolved)) {{
                     let result = Function('"use strict";return (' + resolved + ')')();
                     return Math.round(result * 100) / 100;
                 }}
             }} catch (e) {{
-                return '#ERROR!';
+                return val;
             }}
             return val;
         }}
 
-        // Custom Renderer for Excel view
         function excelRenderer(instance, td, row, col, prop, value, cellProperties) {{
             Handsontable.renderers.TextRenderer.apply(this, arguments);
             if (value && String(value).startsWith('=')) {{
-                let evaluated = evaluateFormula(value, row, col, instance.getData());
+                let evaluated = evaluateFormula(value, instance.getData());
                 td.innerText = evaluated;
                 td.style.fontWeight = '500';
             }}
@@ -545,7 +543,7 @@ hot_html = f"""
             data: rawData,
             colHeaders: headers,
             rowHeaders: true,
-            height: 520,
+            height: 500,
             width: '100%',
             cells: function(row, col) {{
                 return {{ renderer: excelRenderer }};
@@ -580,17 +578,22 @@ hot_html = f"""
             licenseKey: 'non-commercial-and-evaluation'
         }});
 
-        // Excel cell selection while formula typing
-        hot.addHook('afterOnCellMouseDown', function(event, coords) {{
-            const editor = hot.getActiveEditor();
-            if (editor && editor.isOpened() && editor.TEXTAREA) {{
-                let val = editor.TEXTAREA.value;
-                if (val && val.startsWith('=')) {{
-                    const cellLetter = indexToColLetter(coords.col) + (coords.row + 1);
-                    if (val.endsWith('(') || val.endsWith(',') || val.endsWith('+') || val.endsWith('-') || val.endsWith('*') || val.endsWith('/')) {{
-                        editor.TEXTAREA.value = val + cellLetter;
-                    }}
-                }}
+        let currentActiveRow = -1;
+        let currentActiveCol = -1;
+
+        hot.addHook('afterSelection', function(r, c, r2, c2) {{
+            currentActiveRow = r;
+            currentActiveCol = c;
+            const colLetter = indexToColLetter(c);
+            cellAddress.innerText = colLetter + (r + 1);
+            const val = hot.getDataAtCell(r, c) || '';
+            formulaInput.value = val;
+        }});
+
+        formulaInput.addEventListener('keydown', function(e) {{
+            if (e.key === 'Enter' && currentActiveRow >= 0 && currentActiveCol >= 0) {{
+                hot.setDataAtCell(currentActiveRow, currentActiveCol, formulaInput.value);
+                hot.render();
             }}
         }});
     </script>
@@ -598,7 +601,7 @@ hot_html = f"""
 </html>
 """
 
-components.html(hot_html, height=550)
+components.html(hot_html, height=560)
 
 # Export and Reset options
 c_down, c_reset_dr, c_reset_addins, c_reset_all = st.columns([2.5, 1, 1, 1.2])
