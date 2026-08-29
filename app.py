@@ -14,13 +14,12 @@ st.set_page_config(page_title="Happi Cashbook Master", layout="wide", initial_si
 st.markdown("""
     <style>
     .block-container { 
-        padding-top: 0.5rem !important; 
+        padding-top: 1rem !important; 
         padding-bottom: 0rem !important; 
         padding-left: 1rem !important; 
         padding-right: 1rem !important; 
         max-width: 100% !important;
     }
-    header {visibility: hidden !important;}
     #MainMenu {visibility: hidden !important;}
     footer {visibility: hidden !important;}
     .main-title { 
@@ -202,7 +201,7 @@ def process_cashbook_image(pil_img, target_branch):
     if ksp_approvals: store_entry["(KSP)'Sir's Approvals"] = format_excel_formula(ksp_approvals)
     save_db()
 
-# --- SIDEBAR ---
+# --- SIDEBAR (Auto-Expanded & Always Available) ---
 with st.sidebar:
     st.markdown("### 🏢 Happi Control Hub")
     
@@ -246,7 +245,7 @@ with st.sidebar:
         save_db()
         st.rerun()
 
-# Process Ingestions directly into Global Server State
+# Process Ingestions
 if addins_dump_file:
     try:
         df_addins = pd.read_csv(addins_dump_file) if addins_dump_file.name.endswith(".csv") else pd.read_excel(addins_dump_file)
@@ -318,7 +317,6 @@ for idx, b in enumerate(selected_branches, start=1):
     ksp = e.get("(KSP)'Sir's Approvals", "")
     rem = e.get("REMARKS", "")
 
-    # Auto-Calculate Live Closing Balance
     total_deductions = sum([
         evaluate_val(dep), evaluate_val(den), evaluate_val(addin),
         evaluate_val(pend), evaluate_val(fin), evaluate_val(sr),
@@ -386,7 +384,6 @@ edited_df = st.data_editor(
     key="master_live_editor"
 )
 
-# Sync edits back to server storage immediately
 has_changes = False
 for _, row in edited_df.iterrows():
     b_name = row["BRANCH"]
