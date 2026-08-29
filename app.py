@@ -241,7 +241,7 @@ reader = load_ocr()
 
 
 def process_cashbook_ocr(img_np, target_branch):
-  """Extracts cashbook data strictly into Denomination & Approvals without touching DEPOSIT."""
+  """Extracts cashbook data strictly into Denomination & Approvals."""
   height, width = img_np.shape[:2]
   ocr_results = reader.readtext(img_np)
 
@@ -268,8 +268,6 @@ def process_cashbook_ocr(img_np, target_branch):
     r["items"].sort(key=lambda item: item["x"])
 
   denom_val = ""
-  addins_val = ""
-  closing_val = ""
   pending_apprvls, finance_amnt, sr_list, edits_list, ksp_approvals = (
       [],
       [],
@@ -293,20 +291,8 @@ def process_cashbook_ocr(img_np, target_branch):
 
     left_text = " ".join([i["text"] for i in left_items]).lower()
 
-    if "closing" in left_text:
-      for i in reversed(left_items):
-        val = extract_number(i["text"], round_val=False)
-        if val is not None and val > 0:
-          closing_val = int(round(val)) if val.is_integer() else val
-          break
-    elif "add ins" in left_text or "addins" in left_text:
-      for i in reversed(left_items):
-        val = extract_number(i["text"], round_val=False)
-        if val is not None and val > 0:
-          addins_val = int(round(val)) if val.is_integer() else val
-          break
-    elif not denom_val and "deposit" in left_text:
-      # If denom wasn't detected on right, use the deposit row number for DENOMINATION only
+    # Fallback to deposit row number if denom not detected on right
+    if not denom_val and "deposit" in left_text:
       for i in reversed(left_items):
         val = extract_number(i["text"], round_val=False)
         if val is not None and val > 0:
@@ -407,16 +393,12 @@ def process_cashbook_ocr(img_np, target_branch):
       "(KSP)'Sir's Approvals": format_excel_formula(ksp_approvals),
   }
 
-  # Update manual edits: NOTE: DEPOSIT is intentionally left intact for manual cashier entry
+  # Update manual edits
   if target_branch not in db["manual_edits"]:
     db["manual_edits"][target_branch] = {}
 
   if denom_val:
     db["manual_edits"][target_branch]["DENOMINATION"] = str(denom_val)
-  if addins_val:
-    db["manual_edits"][target_branch]["AddinGS"] = str(addins_val)
-  if closing_val:
-    db["manual_edits"][target_branch]["CLOSING BALANCE"] = str(closing_val)
   if pending_apprvls:
     db["manual_edits"][target_branch]["PENDING APPRVLS"] = format_excel_formula(
         pending_apprvls
