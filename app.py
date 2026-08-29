@@ -395,19 +395,11 @@ if uploaded_files:
             if matched_branch:
                 process_cashbook_image(image, matched_branch)
 
-# --- CONVERT VALUES TO CLEAN NUMBERS OR FORMULAS ---
+# --- CONVERT VALUES ---
 def prepare_cell_value(val):
     if not val:
-        return None
-    s = str(val).strip()
-    if s.startswith("="):
-        return s
-    try:
-        clean = s.replace(",", "")
-        num = float(clean)
-        return int(round(num)) if num.is_integer() else num
-    except:
-        return s
+        return ""
+    return str(val).strip()
 
 headers = [
     "Sl.No.", "CODE", "BRANCH", "OPENING BALANCE", "DEPOSIT", "DENOMINATION", 
@@ -424,7 +416,7 @@ for idx, b in enumerate(selected_branches, start=1):
     manual = db["manual_edits"].get(b_name, {})
 
     row_data = [
-        idx,
+        str(idx),
         b["CODE"],
         b["BRANCH"],
         prepare_cell_value(manual.get("OPENING BALANCE", str(opening_bal))),
@@ -445,14 +437,13 @@ for idx, b in enumerate(selected_branches, start=1):
 
 st.subheader(f"📊 Head Office Master Cashbook ({len(selected_branches)} Stores Shown)")
 
-# Complete Excel-Engine with Range Selection & Calculation
+# Robust Full Formula-Engine Grid
 hot_html = f"""
 <!DOCTYPE html>
 <html>
 <head>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/handsontable/dist/handsontable.full.min.css">
     <script src="https://cdn.jsdelivr.net/npm/handsontable/dist/handsontable.full.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/hyperformula/dist/hyperformula.full.min.js"></script>
     <style>
         body {{ margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }}
         #excelGrid {{ width: 100%; height: 530px; overflow: hidden; font-size: 13px; }}
@@ -464,17 +455,18 @@ hot_html = f"""
     <div id="excelGrid"></div>
     <script>
         const container = document.getElementById('excelGrid');
-        const data = {json.dumps(grid_rows)};
+        let rawData = {json.dumps(grid_rows)};
         const headers = {json.dumps(headers)};
 
-        const hyperformulaInstance = HyperFormula.buildEmpty({{
-            licenseKey: 'internal-use-in-handsontable',
-            useArrayArithmetic: true,
-            smartEmptyCells: true,
-            ignoreWhitespace: true,
-        }});
+        function colLetterToIndex(str) {{
+            let num = 0;
+            for (let i = 0; i < str.length; i++) {{
+                num = num * 26 + (str.charCodeAt(i) - 64);
+            }}
+            return num - 1;
+        }}
 
-        function colIndexToLetter(colIndex) {{
+        function indexToColLetter(colIndex) {{
             let letter = '';
             while (colIndex >= 0) {{
                 letter = String.fromCharCode((colIndex % 26) + 65) + letter;
@@ -483,31 +475,97 @@ hot_html = f"""
             return letter;
         }}
 
+        function evaluateFormula(val, row, col, tableData) {{
+            if (!val || typeof val !== 'string' || !val.startsWith('=')) return val;
+            let expr = val.substring(1).trim().toUpperCase();
+
+            try {{
+                // Handle SUM(Range) or SUM(A, B, C)
+                if (expr.startsWith('SUM(') && expr.endsWith(')')) {{
+                    let inner = expr.substring(4, expr.length - 1);
+                    let sum = 0;
+                    if (inner.includes(':')) {{
+                        let parts = inner.split(':');
+                        let m1 = parts[0].match(/([A-Z]+)(\\d+)/);
+                        let m2 = parts[1].match(/([A-Z]+)(\\d+)/);
+                        if (m1 && m2) {{
+                            let startCol = colLetterToIndex(m1[1]);
+                            let startRow = parseInt(m1[2]) - 1;
+                            let endCol = colLetterToIndex(m2[1]);
+                            let endRow = parseInt(m2[2]) - 1;
+
+                            for (let r = Math.min(startRow, endRow); r <= Math.max(startRow, endRow); r++) {{
+                                for (let c = Math.min(startCol, endCol); c <= Math.max(startCol, endCol); c++) {{
+                                    if (tableData[r] && tableData[r][c] !== undefined) {{
+                                        let cellVal = evaluateFormula(tableData[r][c], r, c, tableData);
+                                        let num = parseFloat(String(cellVal).replace(/,/g, ''));
+                                        if (!isNaN(num)) sum += num;
+                                    }}
+                                }}
+                            }}
+                            return sum;
+                        }}
+                    }}
+                }}
+
+                // Handle cell references like D1 + E1 - F1
+                let resolved = expr.replace(/([A-Z]+)(\\d+)/g, function(match, colStr, rowStr) {{
+                    let c = colLetterToIndex(colStr);
+                    let r = parseInt(rowStr) - 1;
+                    if (tableData[r] && tableData[r][c] !== undefined) {{
+                        let cellVal = evaluateFormula(tableData[r][c], r, c, tableData);
+                        let num = parseFloat(String(cellVal).replace(/,/g, ''));
+                        return isNaN(num) ? 0 : num;
+                    }}
+                    return 0;
+                }});
+
+                // Math eval safely
+                if (/^[0-9+\\-*\\/().\\s]+$/.test(resolved)) {{
+                    let result = Function('"use strict";return (' + resolved + ')')();
+                    return Math.round(result * 100) / 100;
+                }}
+            }} catch (e) {{
+                return '#ERROR!';
+            }}
+            return val;
+        }}
+
+        // Custom Renderer for Excel view
+        function excelRenderer(instance, td, row, col, prop, value, cellProperties) {{
+            Handsontable.renderers.TextRenderer.apply(this, arguments);
+            if (value && String(value).startsWith('=')) {{
+                let evaluated = evaluateFormula(value, row, col, instance.getData());
+                td.innerText = evaluated;
+                td.style.fontWeight = '500';
+            }}
+        }}
+
         const hot = new Handsontable(container, {{
-            data: data,
+            data: rawData,
             colHeaders: headers,
             rowHeaders: true,
             height: 520,
             width: '100%',
-            formulas: {{
-                engine: hyperformulaInstance,
+            cells: function(row, col) {{
+                return {{ renderer: excelRenderer }};
             }},
             columns: [
                 {{ readOnly: true, className: 'htCenter' }},
                 {{ readOnly: true, className: 'htCenter' }},
                 {{ readOnly: true }},
-                {{ type: 'numeric', numericFormat: {{ pattern: '0,0' }} }},
-                {{ type: 'numeric', numericFormat: {{ pattern: '0,0' }} }},
-                {{ type: 'numeric', numericFormat: {{ pattern: '0,0' }} }},
-                {{ type: 'numeric', numericFormat: {{ pattern: '0,0' }} }},
-                {{ type: 'numeric', numericFormat: {{ pattern: '0,0' }} }},
-                {{ type: 'numeric', numericFormat: {{ pattern: '0,0' }} }},
-                {{ type: 'numeric', numericFormat: {{ pattern: '0,0' }} }},
-                {{ type: 'numeric', numericFormat: {{ pattern: '0,0' }} }},
-                {{ type: 'numeric', numericFormat: {{ pattern: '0,0' }} }},
-                {{ type: 'numeric', numericFormat: {{ pattern: '0,0' }} }},
-                {{ type: 'numeric', numericFormat: {{ pattern: '0,0' }} }},
-                {{ type: 'numeric', numericFormat: {{ pattern: '0,0' }} }},
+                {{ type: 'text' }},
+                {{ type: 'text' }},
+                {{ type: 'text' }},
+                {{ type: 'text' }},
+                {{ type: 'text' }},
+                {{ type: 'text' }},
+                {{ type: 'text' }},
+                {{ type: 'text' }},
+                {{ type: 'text' }},
+                {{ type: 'text' }},
+                {{ type: 'text' }},
+                {{ type: 'text' }},
                 {{ type: 'text' }}
             ],
             stretchH: 'all',
@@ -518,18 +576,17 @@ hot_html = f"""
             autoWrapCol: true,
             copyPaste: true,
             undo: true,
-            outsideClickDeselects: false,
             selectionMode: 'multiple',
             licenseKey: 'non-commercial-and-evaluation'
         }});
 
-        // Excel-like mouse drag range insertion while formula editing
+        // Excel cell selection while formula typing
         hot.addHook('afterOnCellMouseDown', function(event, coords) {{
             const editor = hot.getActiveEditor();
             if (editor && editor.isOpened() && editor.TEXTAREA) {{
                 let val = editor.TEXTAREA.value;
                 if (val && val.startsWith('=')) {{
-                    const cellLetter = colIndexToLetter(coords.col) + (coords.row + 1);
+                    const cellLetter = indexToColLetter(coords.col) + (coords.row + 1);
                     if (val.endsWith('(') || val.endsWith(',') || val.endsWith('+') || val.endsWith('-') || val.endsWith('*') || val.endsWith('/')) {{
                         editor.TEXTAREA.value = val + cellLetter;
                     }}
