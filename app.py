@@ -8,7 +8,6 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 import streamlit as st
-import streamlit.components.v1 as components
 
 # Page configuration
 st.set_page_config(page_title="Happi Cashbook Master", layout="wide")
@@ -162,7 +161,7 @@ def load_ocr():
 reader = load_ocr()
 
 def process_cashbook_ocr(img_np, target_branch):
-    """Accurately parses all voucher amounts and separates Finance, SR, Pending Approvals."""
+    """Bulletproof line-by-line OCR parser that accurately isolates voucher amounts."""
     height, width = img_np.shape[:2]
     ocr_results = reader.readtext(img_np)
     
@@ -176,18 +175,7 @@ def process_cashbook_ocr(img_np, target_branch):
             "text": text.strip()
         })
 
-    # Find Vertical Boundary for Approvals Body
-    y_start_approvals = 0
-    y_end_approvals = height
-    
-    for b in boxes:
-        t = b["text"].lower()
-        if "add ins" in t or "addins" in t or "add in" in t:
-            y_start_approvals = max(y_start_approvals, b["y"] + 8)
-        elif "total approval" in t:
-            y_end_approvals = min(y_end_approvals, b["y"] - 5)
-
-    # 1. Denomination Total from right table (x > 65% width)
+    # 1. Denomination Total from right side table
     denom_val = ""
     right_boxes = [b for b in boxes if b["x"] > width * 0.65]
     for b in right_boxes:
@@ -201,21 +189,13 @@ def process_cashbook_ocr(img_np, target_branch):
             if nums:
                 denom_val = str(nums[-1])
                 break
-                
-    if not denom_val:
-        for b in boxes:
-            if "deposit" in b["text"].lower() and b["x"] < width * 0.65:
-                nums = [int(float(n.replace(",", ""))) for n in re.findall(r"\b\d+(?:,\d+)*(?:\.\d+)?\b", b["text"])]
-                if nums:
-                    denom_val = str(nums[-1])
-                    break
 
-    # 2. Group Left Table items into horizontal lines
-    voucher_boxes = [b for b in boxes if y_start_approvals < b["y"] < y_end_approvals and b["x"] <= width * 0.70]
-    voucher_boxes.sort(key=lambda b: b["y"])
+    # 2. Cluster Left Table boxes into lines
+    left_boxes = [b for b in boxes if b["x"] <= width * 0.70]
+    left_boxes.sort(key=lambda b: b["y"])
     
     v_rows = []
-    for b in voucher_boxes:
+    for b in left_boxes:
         placed = False
         for r in v_rows:
             if abs(r["y"] - b["y"]) <= 22:
@@ -236,35 +216,39 @@ def process_cashbook_ocr(img_np, target_branch):
         r["items"].sort(key=lambda item: item["x"])
         full_line = " ".join([i["text"] for i in r["items"]])
         full_line_lower = full_line.lower()
-        
-        # Clean out dates & invoice codes so only real numbers remain
-        cleaned_for_nums = re.sub(r"\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b", " ", full_line)
-        cleaned_for_nums = re.sub(r"\b[A-Za-z0-9]+/[A-Za-z0-9]+/\d+\b", " ", cleaned_for_nums)
-        cleaned_for_nums = re.sub(r"\b[A-Za-z0-9]+/\d+\b", " ", cleaned_for_nums)
-        
-        nums_found = re.findall(r"\b\d+(?:,\d+)*(?:\.\d+)?\b", cleaned_for_nums)
-        clean_nums = []
-        for n in nums_found:
+
+        # Skip headers / structural rows
+        if any(h in full_line_lower for h in ["add ins", "addins", "total approval", "closing", "diffrence", "difference", "excess", "short"]):
+            continue
+
+        # Extract amounts: filter out dates and invoice segments
+        cleaned_text = re.sub(r"\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b", " ", full_line)
+        cleaned_text = re.sub(r"\b[A-Za-z0-9]+/[A-Za-z0-9]+/\d+\b", " ", cleaned_text)
+        cleaned_text = re.sub(r"\b[A-Za-z0-9]+/\d+\b", " ", cleaned_text)
+
+        all_nums = re.findall(r"\b\d+(?:,\d+)*(?:\.\d+)?\b", cleaned_text)
+        valid_nums = []
+        for n in all_nums:
             val = float(n.replace(",", ""))
-            if val > 0 and val not in [2000, 500, 200, 100, 50, 20, 10, 5]:
-                clean_nums.append(int(round(val)))
-            elif val > 0 and (val >= 1000 or (val in [500, 200, 100, 50, 20, 10] and len(clean_nums) == 0)):
-                clean_nums.append(int(round(val)))
-                
-        if clean_nums:
-            target_amount = clean_nums[-1]
-            
-            # Categorize based on text keywords
+            if val > 0 and val not in [2024, 2025, 2026, 2027]:
+                valid_nums.append(int(round(val)))
+
+        if valid_nums:
+            amount = valid_nums[-1]
+
+            # Route to exact category
             if any(k in full_line_lower for k in ["bajaj", "idfc", "cash back", "cashback", "cash to card", "upi", "dbd", "finance"]):
-                finance_amnt.append(target_amount)
+                finance_amnt.append(amount)
             elif any(k in full_line_lower for k in ["sales return", "sale return", "srn", "sr/", "doa", "return", "sr "]):
-                sr_list.append(target_amount)
+                sr_list.append(amount)
             elif any(k in full_line_lower for k in ["pavan", "santhosh", "sharan"]):
-                ksp_approvals.append(target_amount)
+                ksp_approvals.append(amount)
             elif "extra" in full_line_lower or "edit" in full_line_lower:
-                edits_list.append(target_amount)
+                edits_list.append(amount)
+            elif any(k in full_line_lower for k in ["travel", "traveling", "auditor", "suresh", "admin", "mallesh", "shiva", "khan", "naresh", "coo", "asm", "javeed", "trade license", "expense", "bill", "courior", "damage"]):
+                pending_apprvls.append(amount)
             else:
-                pending_apprvls.append(target_amount)
+                pending_apprvls.append(amount)
 
     f_denom = str(denom_val) if denom_val else ""
     f_pending = format_excel_formula(pending_apprvls)
@@ -273,7 +257,7 @@ def process_cashbook_ocr(img_np, target_branch):
     f_edits = format_excel_formula(edits_list)
     f_ksp = format_excel_formula(ksp_approvals)
 
-    # Overwrite in database
+    # Overwrite database
     db["store_data"][target_branch] = {
         "DENOMINATION": f_denom,
         "PENDING APPRVLS": f_pending,
@@ -481,14 +465,8 @@ if uploaded_files:
             if matched_branch:
                 process_cashbook_ocr(img_np, matched_branch)
 
-# --- BUILD EXCEL DATA GRID WITH REAL FORMULA ENGINE ---
-headers = [
-    "Sl.No.", "CODE", "BRANCH", "OPENING BALANCE", "DEPOSIT", "DENOMINATION", 
-    "AddinGS", "PENDING APPRVLS", "FINANCE AMNT", "SR", "SWEEPER SALARY", 
-    "EDITS", "APX SHORTAGE", "(KSP)'Sir's Approvals", "CLOSING BALANCE", "REMARKS"
-]
-
-grid_rows = []
+# --- BUILD MASTER DATAFRAME ---
+final_rows = []
 for idx, b in enumerate(selected_branches, start=1):
     b_name = b["BRANCH"]
     d = db["store_data"].get(b_name, {})
@@ -496,91 +474,67 @@ for idx, b in enumerate(selected_branches, start=1):
     addins_val = db["addins_data"].get(b_name, "")
     manual = db["manual_edits"].get(b_name, {})
 
-    row_data = [
-        idx,
-        b["CODE"],
-        b["BRANCH"],
-        manual.get("OPENING BALANCE", str(opening_bal)),
-        manual.get("DEPOSIT", ""),
-        manual.get("DENOMINATION", str(d.get("DENOMINATION", ""))),
-        manual.get("AddinGS", str(addins_val)),
-        manual.get("PENDING APPRVLS", str(d.get("PENDING APPRVLS", ""))),
-        manual.get("FINANCE AMNT", str(d.get("FINANCE AMNT", ""))),
-        manual.get("SR", str(d.get("SR", ""))),
-        manual.get("SWEEPER SALARY", ""),
-        manual.get("EDITS", str(d.get("EDITS", ""))),
-        manual.get("APX SHORTAGE", ""),
-        manual.get("(KSP)'Sir's Approvals", str(d.get("(KSP)'Sir's Approvals", ""))),
-        manual.get("CLOSING BALANCE", ""),
-        manual.get("REMARKS", "")
-    ]
-    grid_rows.append(row_data)
+    final_rows.append({
+        "Sl.No.": idx,
+        "CODE": b["CODE"],
+        "BRANCH": b["BRANCH"],
+        "OPENING BALANCE": manual.get("OPENING BALANCE", str(opening_bal)),
+        "DEPOSIT": manual.get("DEPOSIT", ""),
+        "DENOMINATION": manual.get("DENOMINATION", str(d.get("DENOMINATION", ""))),
+        "AddinGS": manual.get("AddinGS", str(addins_val)),
+        "PENDING APPRVLS": manual.get("PENDING APPRVLS", str(d.get("PENDING APPRVLS", ""))),
+        "FINANCE AMNT": manual.get("FINANCE AMNT", str(d.get("FINANCE AMNT", ""))),
+        "SR": manual.get("SR", str(d.get("SR", ""))),
+        "SWEEPER SALARY": manual.get("SWEEPER SALARY", ""),
+        "EDITS": manual.get("EDITS", str(d.get("EDITS", ""))),
+        "APX SHORTAGE": manual.get("APX SHORTAGE", ""),
+        "(KSP)'Sir's Approvals": manual.get("(KSP)'Sir's Approvals", str(d.get("(KSP)'Sir's Approvals", ""))),
+        "CLOSING BALANCE": manual.get("CLOSING BALANCE", ""),
+        "REMARKS": manual.get("REMARKS", "")
+    })
 
-st.subheader(f"📊 Head Office Master Cashbook ({len(selected_branches)} Stores Shown)")
+df_master = pd.DataFrame(final_rows)
 
-hot_html = f"""
-<!DOCTYPE html>
-<html>
-<head>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/handsontable/dist/handsontable.full.min.css">
-    <script src="https://cdn.jsdelivr.net/npm/handsontable/dist/handsontable.full.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/hyperformula/dist/hyperformula.full.min.js"></script>
-    <style>
-        body {{ margin: 0; padding: 0; font-family: sans-serif; }}
-        #excelGrid {{ width: 100%; height: 530px; overflow: hidden; }}
-        .handsontable th {{ background-color: #F0F2F6; font-weight: bold; color: #333; }}
-    </style>
-</head>
-<body>
-    <div id="excelGrid"></div>
-    <script>
-        const container = document.getElementById('excelGrid');
-        const data = {json.dumps(grid_rows)};
-        const headers = {json.dumps(headers)};
+st.subheader(f"📋 Head Office Master Cashbook ({len(selected_branches)} Stores Shown)")
 
-        const hyperformulaInstance = HyperFormula.buildEmpty({{
-            licenseKey: 'internal-use-in-handsontable',
-        }});
+column_config = {col: st.column_config.TextColumn(col) for col in [
+    "OPENING BALANCE", "DEPOSIT", "DENOMINATION", "AddinGS", "PENDING APPRVLS", 
+    "FINANCE AMNT", "SR", "SWEEPER SALARY", "EDITS", "APX SHORTAGE", 
+    "(KSP)'Sir's Approvals", "CLOSING BALANCE", "REMARKS"
+]}
 
-        const hot = new Handsontable(container, {{
-            data: data,
-            colHeaders: headers,
-            rowHeaders: true,
-            height: 520,
-            width: '100%',
-            formulas: {{
-                engine: hyperformulaInstance,
-            }},
-            columns: [
-                {{ readOnly: true }},
-                {{ readOnly: true }},
-                {{ readOnly: true }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }}
-            ],
-            stretchH: 'all',
-            manualColumnResize: true,
-            manualRowResize: true,
-            contextMenu: true,
-            licenseKey: 'non-commercial-and-evaluation'
-        }});
-    </script>
-</body>
-</html>
-"""
+edited_df = st.data_editor(
+    df_master,
+    use_container_width=True,
+    height=550,
+    disabled=["Sl.No.", "CODE", "BRANCH"],
+    column_config=column_config,
+    num_rows="fixed",
+    key=f"master_data_editor_{work_mode}_{len(selected_branches)}"
+)
 
-components.html(hot_html, height=550)
+# Persist manual edits directly
+for idx, row in edited_df.iterrows():
+    b_name = row["BRANCH"]
+    if b_name not in db["manual_edits"]:
+        db["manual_edits"][b_name] = {}
+        
+    db["manual_edits"][b_name] = {
+        "OPENING BALANCE": str(row["OPENING BALANCE"]) if pd.notna(row["OPENING BALANCE"]) else "",
+        "DEPOSIT": str(row["DEPOSIT"]) if pd.notna(row["DEPOSIT"]) else "",
+        "DENOMINATION": str(row["DENOMINATION"]) if pd.notna(row["DENOMINATION"]) else "",
+        "AddinGS": str(row["AddinGS"]) if pd.notna(row["AddinGS"]) else "",
+        "PENDING APPRVLS": str(row["PENDING APPRVLS"]) if pd.notna(row["PENDING APPRVLS"]) else "",
+        "FINANCE AMNT": str(row["FINANCE AMNT"]) if pd.notna(row["FINANCE AMNT"]) else "",
+        "SR": str(row["SR"]) if pd.notna(row["SR"]) else "",
+        "SWEEPER SALARY": str(row["SWEEPER SALARY"]) if pd.notna(row["SWEEPER SALARY"]) else "",
+        "EDITS": str(row["EDITS"]) if pd.notna(row["EDITS"]) else "",
+        "APX SHORTAGE": str(row["APX SHORTAGE"]) if pd.notna(row["APX SHORTAGE"]) else "",
+        "(KSP)'Sir's Approvals": str(row["(KSP)'Sir's Approvals"]) if pd.notna(row["(KSP)'Sir's Approvals"]) else "",
+        "CLOSING BALANCE": str(row["CLOSING BALANCE"]) if pd.notna(row["CLOSING BALANCE"]) else "",
+        "REMARKS": str(row["REMARKS"]) if pd.notna(row["REMARKS"]) else ""
+    }
+save_db(db)
 
 # Export and Reset options
 c_down, c_reset_dr, c_reset_addins, c_reset_all = st.columns([2.5, 1, 1, 1.2])
@@ -608,7 +562,7 @@ with c_down:
             "SWEEPER SALARY": manual.get("SWEEPER SALARY", ""),
             "EDITS": manual.get("EDITS", str(d.get("EDITS", ""))),
             "APX SHORTAGE": manual.get("APX SHORTAGE", ""),
-            "(KSP)'Sir's Approvals": manual.get("(KSP)'Sir's Approvals", str(d.get("(KSP)'Sir's Approvals", "")) ),
+            "(KSP)'Sir's Approvals": manual.get("(KSP)'Sir's Approvals", str(d.get("(KSP)'Sir's Approvals", ""))),
             "CLOSING BALANCE": manual.get("CLOSING BALANCE", ""),
             "REMARKS": manual.get("REMARKS", "")
         })
