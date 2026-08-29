@@ -10,15 +10,18 @@ import pytesseract
 import streamlit as st
 import streamlit.components.v1 as components
 
-st.set_page_config(page_title="Happi Cashbook Master", layout="wide")
+st.set_page_config(page_title="Happi Cashbook Master", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
     <style>
-    .header-style { font-size: 24px; font-weight: bold; color: #0E4C92; margin-bottom: 15px; }
+    .block-container { padding-top: 1rem; padding-bottom: 0rem; padding-left: 1.5rem; padding-right: 1.5rem; }
+    header {visibility: hidden;}
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    .main-title { font-size: 20px; font-weight: 700; color: #0E4C92; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+    .stSidebar { background-color: #f8fafc; }
     </style>
 """, unsafe_allow_html=True)
-
-st.markdown('<div class="header-style">🏢 HAPPI MOBILES - HEAD OFFICE MASTER CASHBOOK AUTOMATION</div>', unsafe_allow_html=True)
 
 DB_FILE = "cashbook_master_db.json"
 
@@ -107,34 +110,6 @@ def save_db(data):
 db = load_db()
 if "addins_data" not in db:
     db["addins_data"] = {}
-
-st.sidebar.title("👥 Work Assignment")
-work_mode = st.sidebar.radio(
-    "Select Work Mode:",
-    ["👤 Single Cashier (All Stores)", "👥 Two Cashiers (Split 50-50)"]
-)
-
-all_branches = db["branches"]
-total_branches_count = len(all_branches)
-selected_branches = all_branches
-
-if work_mode == "👥 Two Cashiers (Split 50-50)":
-    mid_point = math.ceil(total_branches_count / 2)
-    c1_branches = all_branches[:mid_point]
-    c2_branches = all_branches[mid_point:]
-    
-    c1_label = f"Cashier 1 ({len(c1_branches)} Stores: {c1_branches[0]['BRANCH']} to {c1_branches[-1]['BRANCH']})"
-    c2_label = f"Cashier 2 ({len(c2_branches)} Stores: {c2_branches[0]['BRANCH']} to {c2_branches[-1]['BRANCH']})"
-    
-    cashier_view = st.sidebar.selectbox("Choose Your Cashier Assignment:", [c1_label, c2_label])
-    if cashier_view == c1_label:
-        selected_branches = c1_branches
-        st.sidebar.success(f"Loaded Cashier 1: **{len(selected_branches)}** Stores")
-    else:
-        selected_branches = c2_branches
-        st.sidebar.success(f"Loaded Cashier 2: **{len(selected_branches)}** Stores")
-else:
-    st.sidebar.info(f"Loaded All: **{len(selected_branches)}** Stores")
 
 def format_excel_formula(num_list):
     if not num_list:
@@ -226,49 +201,95 @@ def process_cashbook_image(pil_img, target_branch):
     
     save_db(db)
 
-c_ingest1, c_ingest2, c_ingest3, c_ingest4 = st.columns([1, 1, 1, 1.2])
+# --- SIDEBAR: SMART ENTERPRISE CONTROL PANEL ---
+with st.sidebar:
+    st.markdown("### 🏢 Happi Control Hub")
+    
+    st.markdown("#### 👥 Work Mode")
+    work_mode = st.radio(
+        "Assignment Mode:",
+        ["👤 Single Cashier (All Stores)", "👥 Two Cashiers (Split 50-50)"],
+        label_visibility="collapsed"
+    )
 
-with c_ingest1:
-    ho_dump_file = st.file_uploader("📂 1. Apex Dr Balance File", type=["xlsx", "xls", "csv"], key=f"ho_dump_{st.session_state.uploader_key}")
+    all_branches = db["branches"]
+    total_branches_count = len(all_branches)
+    selected_branches = all_branches
 
-with c_ingest2:
-    addins_dump_file = st.file_uploader("📥 2. Addins Excel/CSV Dump", type=["xlsx", "xls", "csv"], key=f"addins_dump_{st.session_state.addins_key}")
+    if work_mode == "👥 Two Cashiers (Split 50-50)":
+        mid_point = math.ceil(total_branches_count / 2)
+        c1_branches = all_branches[:mid_point]
+        c2_branches = all_branches[mid_point:]
+        
+        c1_label = f"Cashier 1 ({len(c1_branches)} Stores)"
+        c2_label = f"Cashier 2 ({len(c2_branches)} Stores)"
+        
+        cashier_view = st.selectbox("Current Cashier:", [c1_label, c2_label])
+        if cashier_view == c1_label:
+            selected_branches = c1_branches
+        else:
+            selected_branches = c2_branches
 
-with c_ingest3:
-    uploaded_files = st.file_uploader("📁 3. Batch Screenshots (OCR)", type=["png", "jpg", "jpeg"], accept_multiple_files=True, key="store_screenshots_uploader")
-
-with c_ingest4:
-    with st.expander("📸 4. Single Snip OCR Ingestion", expanded=True):
+    st.markdown("---")
+    st.markdown("#### 📥 Smart Ingestion Hub")
+    
+    with st.expander("📸 1. Single Store Snip (OCR)", expanded=True):
         target_branch_name = st.selectbox("Target Store:", [b["BRANCH"] for b in selected_branches], key="snip_paste_store")
-        single_snip_file = st.file_uploader(f"Upload Snip for [{target_branch_name}]", type=["png", "jpg", "jpeg"], key=f"single_snip_{target_branch_name}")
+        single_snip_file = st.file_uploader("Upload Cashbook Snip", type=["png", "jpg", "jpeg"], key=f"single_snip_{target_branch_name}")
         if single_snip_file:
             image = Image.open(single_snip_file)
-            with st.spinner(f"Mapping cashbook to {target_branch_name}..."):
+            with st.spinner(f"Mapping {target_branch_name}..."):
                 process_cashbook_image(image, target_branch_name)
-                st.success(f"✅ Mapped to **{target_branch_name}** successfully!")
+                st.success(f"✅ Mapped to {target_branch_name}!")
                 st.rerun()
 
+    with st.expander("📂 2. Apex Dr Balance File", expanded=False):
+        ho_dump_file = st.file_uploader("Upload Apex File", type=["xlsx", "xls", "csv"], key=f"ho_dump_{st.session_state.uploader_key}")
+
+    with st.expander("📥 3. Addins Dump File", expanded=False):
+        addins_dump_file = st.file_uploader("Upload Addins File", type=["xlsx", "xls", "csv"], key=f"addins_dump_{st.session_state.addins_key}")
+
+    with st.expander("📁 4. Batch Screenshots OCR", expanded=False):
+        uploaded_files = st.file_uploader("Upload Batch Snips", type=["png", "jpg", "jpeg"], accept_multiple_files=True, key="store_screenshots_uploader")
+
+    st.markdown("---")
+    st.markdown("#### ⚙️ Data Actions")
+    if st.button("🗑️ Clear Dr Balances", use_container_width=True):
+        db["ho_balances"] = {}
+        for b_name in db["manual_edits"]:
+            db["manual_edits"][b_name]["OPENING BALANCE"] = ""
+        save_db(db)
+        st.session_state.uploader_key += 1
+        st.rerun()
+
+    if st.button("🗑️ Clear Addins Only", use_container_width=True):
+        db["addins_data"] = {}
+        for b_name in db["manual_edits"]:
+            db["manual_edits"][b_name]["AddinGS"] = ""
+        save_db(db)
+        st.session_state.addins_key += 1
+        st.rerun()
+
+    if st.button("🧹 Reset All Store Records", use_container_width=True):
+        db["store_data"] = {}
+        db["manual_edits"] = {}
+        db["metadata"] = {}
+        save_db(db)
+        st.rerun()
+
+# --- BACKGROUND DATA PROCESSING ---
 if addins_dump_file:
     current_addins_id = f"{addins_dump_file.name}_{addins_dump_file.size}"
     if st.session_state.get("last_addins_file") != current_addins_id:
         try:
-            if addins_dump_file.name.endswith(".csv"):
-                df_addins = pd.read_csv(addins_dump_file)
-            else:
-                df_addins = pd.read_excel(addins_dump_file)
-
+            df_addins = pd.read_csv(addins_dump_file) if addins_dump_file.name.endswith(".csv") else pd.read_excel(addins_dump_file)
             branch_col, amt_col = None, None
             for col in df_addins.columns:
                 c_low = str(col).lower()
-                if "branch" in c_low or "store" in c_low or "name" in c_low:
-                    branch_col = col
-                elif "amount" in c_low or "amt" in c_low or "value" in c_low or "total" in c_low or "addin" in c_low:
-                    amt_col = col
-
-            if branch_col is None:
-                branch_col = df_addins.columns[0]
-            if amt_col is None:
-                amt_col = df_addins.columns[1] if len(df_addins.columns) > 1 else df_addins.columns[0]
+                if "branch" in c_low or "store" in c_low or "name" in c_low: branch_col = col
+                elif "amount" in c_low or "amt" in c_low or "value" in c_low or "total" in c_low or "addin" in c_low: amt_col = col
+            if branch_col is None: branch_col = df_addins.columns[0]
+            if amt_col is None: amt_col = df_addins.columns[1] if len(df_addins.columns) > 1 else df_addins.columns[0]
 
             addins_dict = {}
             for idx, row in df_addins.iterrows():
@@ -278,58 +299,36 @@ if addins_dump_file:
                 if match:
                     clean_amt = int(round(float(match.group(1))))
                     if b_val and clean_amt > 0:
-                        if b_val not in addins_dict:
-                            addins_dict[b_val] = []
+                        if b_val not in addins_dict: addins_dict[b_val] = []
                         addins_dict[b_val].append(clean_amt)
 
-            mapped_count = 0
             for b in db["branches"]:
-                b_norm = normalize_name(b["BRANCH"])
-                b_code_norm = normalize_name(b["CODE"])
-                
-                vouchers = []
-                if b_norm in addins_dict:
-                    vouchers = addins_dict[b_norm]
-                elif b_code_norm in addins_dict:
-                    vouchers = addins_dict[b_code_norm]
-
+                b_norm, b_code_norm = normalize_name(b["BRANCH"]), normalize_name(b["CODE"])
+                vouchers = addins_dict.get(b_norm, addins_dict.get(b_code_norm, []))
                 if vouchers:
                     formula_val = format_excel_formula(vouchers)
                     db["addins_data"][b["BRANCH"]] = formula_val
-                    if b["BRANCH"] not in db["manual_edits"]:
-                        db["manual_edits"][b["BRANCH"]] = {}
+                    if b["BRANCH"] not in db["manual_edits"]: db["manual_edits"][b["BRANCH"]] = {}
                     db["manual_edits"][b["BRANCH"]]["AddinGS"] = formula_val
-                    mapped_count += 1
 
             save_db(db)
             st.session_state.last_addins_file = current_addins_id
-            st.success(f"✅ Successfully mapped Addins for **{mapped_count}** stores!")
             st.rerun()
-
         except Exception as e:
-            st.error(f"Error reading Addins file: {e}")
+            st.sidebar.error(f"Error Addins: {e}")
 
 if ho_dump_file:
     current_file_id = f"{ho_dump_file.name}_{ho_dump_file.size}"
     if st.session_state.get("last_processed_file") != current_file_id:
         try:
-            if ho_dump_file.name.endswith(".csv"):
-                df_dump = pd.read_csv(ho_dump_file)
-            else:
-                df_dump = pd.read_excel(ho_dump_file)
-
+            df_dump = pd.read_csv(ho_dump_file) if ho_dump_file.name.endswith(".csv") else pd.read_excel(ho_dump_file)
             branch_col, bal_col = None, None
             for col in df_dump.columns:
                 c_low = str(col).lower()
-                if "branch" in c_low or "store" in c_low or "name" in c_low:
-                    branch_col = col
-                elif "balance" in c_low or "opening" in c_low or "dr" in c_low or "amount" in c_low:
-                    bal_col = col
-
-            if branch_col is None:
-                branch_col = df_dump.columns[0]
-            if bal_col is None:
-                bal_col = df_dump.columns[1] if len(df_dump.columns) > 1 else df_dump.columns[0]
+                if "branch" in c_low or "store" in c_low or "name" in c_low: branch_col = col
+                elif "balance" in c_low or "opening" in c_low or "dr" in c_low or "amount" in c_low: bal_col = col
+            if branch_col is None: branch_col = df_dump.columns[0]
+            if bal_col is None: bal_col = df_dump.columns[1] if len(df_dump.columns) > 1 else df_dump.columns[0]
 
             dump_dict = {}
             for idx, row in df_dump.iterrows():
@@ -338,53 +337,84 @@ if ho_dump_file:
                 match = re.search(r"(\d+\.?\d*)", raw_amt)
                 if match:
                     clean_amt = int(round(float(match.group(1))))
-                    if b_val and clean_amt is not None:
-                        dump_dict[b_val] = clean_amt
+                    if b_val and clean_amt is not None: dump_dict[b_val] = clean_amt
 
             for b in db["branches"]:
-                b_norm = normalize_name(b["BRANCH"])
-                b_code_norm = normalize_name(b["CODE"])
-
-                if b_norm in dump_dict:
-                    db["ho_balances"][b["BRANCH"]] = dump_dict[b_norm]
-                    if b["BRANCH"] not in db["manual_edits"]:
-                        db["manual_edits"][b["BRANCH"]] = {}
-                    db["manual_edits"][b["BRANCH"]]["OPENING BALANCE"] = str(dump_dict[b_norm])
-                elif b_code_norm in dump_dict:
-                    db["ho_balances"][b["BRANCH"]] = dump_dict[b_code_norm]
-                    if b["BRANCH"] not in db["manual_edits"]:
-                        db["manual_edits"][b["BRANCH"]] = {}
-                    db["manual_edits"][b["BRANCH"]]["OPENING BALANCE"] = str(dump_dict[b_code_norm])
+                b_norm, b_code_norm = normalize_name(b["BRANCH"]), normalize_name(b["CODE"])
+                if b_norm in dump_dict or b_code_norm in dump_dict:
+                    val = dump_dict.get(b_norm, dump_dict.get(b_code_norm))
+                    db["ho_balances"][b["BRANCH"]] = val
+                    if b["BRANCH"] not in db["manual_edits"]: db["manual_edits"][b["BRANCH"]] = {}
+                    db["manual_edits"][b["BRANCH"]]["OPENING BALANCE"] = str(val)
 
             save_db(db)
             st.session_state.last_processed_file = current_file_id
             st.rerun()
         except Exception as e:
-            st.error(f"Error reading HO Dump file: {e}")
+            st.sidebar.error(f"Error Apex File: {e}")
 
 if uploaded_files:
-    with st.spinner("Processing screenshots and mapping data..."):
-        for file in uploaded_files:
-            image = Image.open(file)
-            text_sample = pytesseract.image_to_string(image).lower()
+    for file in uploaded_files:
+        image = Image.open(file)
+        text_sample = pytesseract.image_to_string(image).lower()
+        matched_branch = None
+        for b in db["branches"]:
+            b_name_clean, b_code_clean, file_clean = b["BRANCH"].lower(), b["CODE"].lower(), file.name.lower()
+            if b_code_clean in file_clean or b_name_clean in file_clean or b_name_clean in text_sample or b_code_clean in text_sample:
+                matched_branch = b["BRANCH"]
+                break
+        if matched_branch:
+            process_cashbook_image(image, matched_branch)
 
-            matched_branch = None
-            for b in db["branches"]:
-                b_name_clean = b["BRANCH"].lower()
-                b_code_clean = b["CODE"].lower()
-                file_clean = file.name.lower()
+# --- TOP HEADER & DOWNLOAD BAR ---
+col_head1, col_head2 = st.columns([3, 1])
 
-                if b_code_clean in file_clean or b_name_clean in file_clean:
-                    matched_branch = b["BRANCH"]
-                    break
-                elif b_name_clean in text_sample or b_code_clean in text_sample:
-                    matched_branch = b["BRANCH"]
-                    break
+with col_head1:
+    st.markdown(f'<div class="main-title">📊 HAPPI MOBILES - MASTER CASHBOOK WORKSPACE <span style="font-size: 13px; color: #64748b; font-weight: normal;">({len(selected_branches)} Stores Active)</span></div>', unsafe_allow_html=True)
 
-            if matched_branch:
-                process_cashbook_image(image, matched_branch)
+with col_head2:
+    all_rows_export = []
+    for idx, b in enumerate(db["branches"], start=1):
+        b_name = b["BRANCH"]
+        d = db["store_data"].get(b_name, {})
+        opening_bal = db["ho_balances"].get(b_name, "")
+        addins_val = db["addins_data"].get(b_name, "")
+        manual = db["manual_edits"].get(b_name, {})
 
-# Prepare Luckysheet Cell Data
+        all_rows_export.append({
+            "Sl.No.": idx,
+            "CODE": b["CODE"],
+            "BRANCH": b["BRANCH"],
+            "OPENING BALANCE": manual.get("OPENING BALANCE", str(opening_bal)),
+            "DEPOSIT": manual.get("DEPOSIT", ""),
+            "DENOMINATION": manual.get("DENOMINATION", str(d.get("DENOMINATION", ""))),
+            "AddinGS": manual.get("AddinGS", str(addins_val)),
+            "PENDING APPRVLS": manual.get("PENDING APPRVLS", str(d.get("PENDING APPRVLS", ""))),
+            "FINANCE AMNT": manual.get("FINANCE AMNT", str(d.get("FINANCE AMNT", ""))),
+            "SR": manual.get("SR", str(d.get("SR", ""))),
+            "SWEEPER SALARY": manual.get("SWEEPER SALARY", ""),
+            "EDITS": manual.get("EDITS", str(d.get("EDITS", ""))),
+            "APX SHORTAGE": manual.get("APX SHORTAGE", ""),
+            "(KSP)'Sir's Approvals": manual.get("(KSP)'Sir's Approvals", str(d.get("(KSP)'Sir's Approvals", "")) ),
+            "CLOSING BALANCE": manual.get("CLOSING BALANCE", ""),
+            "REMARKS": manual.get("REMARKS", "")
+        })
+
+    df_full_export = pd.DataFrame(all_rows_export)
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_full_export.to_excel(writer, index=False, sheet_name='MASTER REPORT')
+    excel_data = output.getvalue()
+
+    st.download_button(
+        label="📥 Download Master Excel",
+        data=excel_data,
+        file_name="HO_MASTER_CASHBOOK_REPORT.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
+
+# --- PREPARE FULL-SCREEN EXCEL GRID ---
 headers = [
     "SL.No.", "CODE", "BRANCH", "OPENING BALANCE", "DEPOSIT", "DENOMINATION", 
     "AddinGS", "PENDING APPRVLS", "FINANCE AMNT", "SR", "SWEEPER SALARY", 
@@ -393,23 +423,12 @@ headers = [
 
 celldata = []
 
-# Row 0: Headers (Green Background, White Text)
 for c_idx, h_text in enumerate(headers):
     celldata.append({
-        "r": 0,
-        "c": c_idx,
-        "v": {
-            "v": h_text,
-            "m": h_text,
-            "bg": "#1e7082",
-            "fc": "#ffffff",
-            "bl": 1,
-            "ht": 0,
-            "vt": 0
-        }
+        "r": 0, "c": c_idx,
+        "v": { "v": h_text, "m": h_text, "bg": "#1e7082", "fc": "#ffffff", "bl": 1, "ht": 0, "vt": 0 }
     })
 
-# Row 1 to N: Store Data
 for r_idx, b in enumerate(selected_branches, start=1):
     b_name = b["BRANCH"]
     d = db["store_data"].get(b_name, {})
@@ -451,9 +470,6 @@ for r_idx, b in enumerate(selected_branches, start=1):
                     cell_obj["v"]["ct"] = {"fa": "General", "t": "g"}
             celldata.append(cell_obj)
 
-st.subheader(f"📊 Head Office Master Cashbook ({len(selected_branches)} Stores Shown)")
-
-# Luckysheet Full-Engine Excel Component
 luckysheet_html = f"""
 <!DOCTYPE html>
 <html>
@@ -466,8 +482,8 @@ luckysheet_html = f"""
     <script src="https://cdn.jsdelivr.net/npm/luckysheet/dist/plugins/js/plugin.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/luckysheet/dist/luckysheet.umd.js"></script>
     <style>
-        body {{ margin: 0; padding: 0; }}
-        #luckysheet {{ margin: 0px; padding: 0px; position: absolute; width: 100%; height: 560px; left: 0px; top: 0px; }}
+        body {{ margin: 0; padding: 0; overflow: hidden; }}
+        #luckysheet {{ margin: 0px; padding: 0px; position: absolute; width: 100%; height: 86vh; left: 0px; top: 0px; }}
     </style>
 </head>
 <body>
@@ -483,28 +499,14 @@ luckysheet_html = f"""
                 enableAddBackTop: false,
                 data: [{{
                     "name": "MASTER REPORT",
-                    "color": "",
                     "status": 1,
                     "order": 0,
                     "data": [],
                     "config": {{
                         "columnlen": {{
-                            "0": 55,
-                            "1": 75,
-                            "2": 150,
-                            "3": 130,
-                            "4": 90,
-                            "5": 110,
-                            "6": 100,
-                            "7": 130,
-                            "8": 110,
-                            "9": 90,
-                            "10": 120,
-                            "11": 90,
-                            "12": 110,
-                            "13": 140,
-                            "14": 130,
-                            "15": 120
+                            "0": 55, "1": 75, "2": 150, "3": 130, "4": 90, "5": 110,
+                            "6": 100, "7": 130, "8": 110, "9": 90, "10": 120, "11": 90,
+                            "12": 110, "13": 140, "14": 130, "15": 120
                         }}
                     }},
                     "celldata": {json.dumps(celldata)},
@@ -518,79 +520,4 @@ luckysheet_html = f"""
 </html>
 """
 
-components.html(luckysheet_html, height=580)
-
-c_down, c_reset_dr, c_reset_addins, c_reset_all = st.columns([2.5, 1, 1, 1.2])
-
-with c_down:
-    all_rows_export = []
-    for idx, b in enumerate(db["branches"], start=1):
-        b_name = b["BRANCH"]
-        d = db["store_data"].get(b_name, {})
-        opening_bal = db["ho_balances"].get(b_name, "")
-        addins_val = db["addins_data"].get(b_name, "")
-        manual = db["manual_edits"].get(b_name, {})
-
-        all_rows_export.append({
-            "Sl.No.": idx,
-            "CODE": b["CODE"],
-            "BRANCH": b["BRANCH"],
-            "OPENING BALANCE": manual.get("OPENING BALANCE", str(opening_bal)),
-            "DEPOSIT": manual.get("DEPOSIT", ""),
-            "DENOMINATION": manual.get("DENOMINATION", str(d.get("DENOMINATION", ""))),
-            "AddinGS": manual.get("AddinGS", str(addins_val)),
-            "PENDING APPRVLS": manual.get("PENDING APPRVLS", str(d.get("PENDING APPRVLS", ""))),
-            "FINANCE AMNT": manual.get("FINANCE AMNT", str(d.get("FINANCE AMNT", ""))),
-            "SR": manual.get("SR", str(d.get("SR", ""))),
-            "SWEEPER SALARY": manual.get("SWEEPER SALARY", ""),
-            "EDITS": manual.get("EDITS", str(d.get("EDITS", ""))),
-            "APX SHORTAGE": manual.get("APX SHORTAGE", ""),
-            "(KSP)'Sir's Approvals": manual.get("(KSP)'Sir's Approvals", str(d.get("(KSP)'Sir's Approvals", "")) ),
-            "CLOSING BALANCE": manual.get("CLOSING BALANCE", ""),
-            "REMARKS": manual.get("REMARKS", "")
-        })
-
-    df_full_export = pd.DataFrame(all_rows_export)
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_full_export.to_excel(writer, index=False, sheet_name='MASTER REPORT')
-    excel_data = output.getvalue()
-
-    st.download_button(
-        label="📥 Download Full Master Excel Sheet",
-        data=excel_data,
-        file_name="HO_MASTER_CASHBOOK_REPORT.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
-    )
-
-with c_reset_dr:
-    if st.button("🗑️ Clear Dr Balances", use_container_width=True):
-        db["ho_balances"] = {}
-        for b_name in db["manual_edits"]:
-            db["manual_edits"][b_name]["OPENING BALANCE"] = ""
-        save_db(db)
-        st.session_state.uploader_key += 1
-        if "last_processed_file" in st.session_state:
-            del st.session_state["last_processed_file"]
-        st.rerun()
-
-with c_reset_addins:
-    if st.button("🗑️ Clear Addins Only", use_container_width=True):
-        db["addins_data"] = {}
-        for b_name in db["manual_edits"]:
-            db["manual_edits"][b_name]["AddinGS"] = ""
-        save_db(db)
-        st.session_state.addins_key += 1
-        if "last_addins_file" in st.session_state:
-            del st.session_state["last_addins_file"]
-        st.rerun()
-
-with c_reset_all:
-    if st.button("🧹 Reset All Store Entries", use_container_width=True):
-        db["store_data"] = {}
-        db["manual_edits"] = {}
-        db["metadata"] = {}
-        save_db(db)
-        st.success("Cleaned all store records!")
-        st.rerun()
+components.html(luckysheet_html, height=750)
