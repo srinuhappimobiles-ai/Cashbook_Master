@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 import streamlit as st
+from streamlit_paste_button import paste_image_button
 
 # Page configuration
 st.set_page_config(page_title="Happi Cashbook Master", layout="wide")
@@ -232,160 +233,265 @@ def normalize_name(s):
   return re.sub(r"[^A-Za-z0-9]", "", str(s)).upper()
 
 
-def parse_outlook_text(text):
-  """Accurately isolates denomination rows and maps approvals/SR without confusion."""
-  extracted = {
-      "closing_bal": "",
-      "deposit": "",
-      "addins": "",
-      "denom": "",
-      "pending_apprvls": [],
-      "finance_amnt": [],
-      "sr_list": [],
-      "edits_list": [],
-      "ksp_approvals": [],
-      "sr_meta": [],
-      "finance_meta": [],
+@st.cache_resource
+def load_ocr():
+  return easyocr.Reader(["en"])
+
+
+reader = load_ocr()
+
+
+def process_cashbook_ocr(img_np, target_branch):
+  """Extracts cashbook data from image and accurately maps to the target branch."""
+  height, width = img_np.shape[:2]
+  ocr_results = reader.readtext(img_np)
+
+  boxes = []
+  for bbox, text, conf in ocr_results:
+    cx = (bbox[0][0] + bbox[1][0]) / 2
+    cy = (bbox[0][1] + bbox[2][1]) / 2
+    boxes.append({"x": cx, "y": cy, "text": text.strip()})
+
+  boxes.sort(key=lambda b: b["y"])
+  rows = []
+  for b in boxes:
+    placed = False
+    for r in rows:
+      if abs(r["y"] - b["y"]) <= 18:
+        r["items"].append(b)
+        r["y"] = sum(i["y"] for i in r["items"]) / len(r["items"])
+        placed = True
+        break
+    if not placed:
+      rows.append({"y": b["y"], "items": [b]})
+
+  for r in rows:
+    r["items"].sort(key=lambda item: item["x"])
+
+  denom_val = ""
+  deposit_val = ""
+  addins_val = ""
+  closing_val = ""
+  pending_apprvls, finance_amnt, sr_list, edits_list, ksp_approvals = (
+      [],
+      [],
+      [],
+      [],
+      [],
+  )
+  sr_meta, finance_meta = [], []
+
+  for r in rows:
+    left_items = [i for i in r["items"] if i["x"] <= width * 0.68]
+    right_items = [i for i in r["items"] if i["x"] > width * 0.68]
+
+    # Check right column for Denomination Total
+    if any("total" in i["text"].lower() for i in right_items):
+      for i in reversed(right_items):
+        val = extract_number(i["text"], round_val=False)
+        if val is not None and val > 0:
+          denom_val = int(round(val)) if val.is_integer() else val
+          break
+
+    left_text = " ".join([i["text"] for i in left_items]).lower()
+
+    if "closing" in left_text:
+      for i in reversed(left_items):
+        val = extract_number(i["text"], round_val=False)
+        if val is not None and val > 0:
+          closing_val = int(round(val)) if val.is_integer() else val
+          break
+    elif "deposit" in left_text:
+      for i in reversed(left_items):
+        val = extract_number(i["text"], round_val=False)
+        if val is not None and val > 0:
+          deposit_val = int(round(val)) if val.is_integer() else val
+          break
+    elif "add ins" in left_text or "addins" in left_text:
+      for i in reversed(left_items):
+        val = extract_number(i["text"], round_val=False)
+        if val is not None and val > 0:
+          addins_val = int(round(val)) if val.is_integer() else val
+          break
+
+    # Approvals & Vouchers in the body
+    if not any(
+        x in left_text
+        for x in [
+            "closing",
+            "deposit",
+            "diffrence",
+            "difference",
+            "total approval",
+            "excess",
+            "short",
+            "approvals & sale",
+            "add ins",
+            "addins",
+            "cash book",
+            "cash denomination",
+        ]
+    ):
+      amt = None
+      for i in left_items:
+        if i["x"] > width * 0.50:
+          val = extract_number(i["text"], round_val=False)
+          if val is not None and val > 0:
+            amt = int(round(val)) if val.is_integer() else val
+            break
+
+      if amt and amt > 0:
+        if any(k in left_text for k in ["pavan", "santhosh", "sharan"]):
+          ksp_approvals.append(amt)
+        elif any(
+            k in left_text
+            for k in [
+                "admin",
+                "mallesh",
+                "shiva",
+                "khan",
+                "naresh",
+                "coo",
+                "asm",
+                "javeed",
+                "trade license",
+            ]
+        ):
+          pending_apprvls.append(amt)
+        elif any(
+            k in left_text
+            for k in [
+                "bajaj",
+                "idfc",
+                "cash back",
+                "cashback",
+                "cash to card",
+                "upi",
+                "dbd",
+            ]
+        ):
+          finance_amnt.append(amt)
+          remark = (
+              "Cash Back"
+              if "cash" in left_text
+              else (
+                  "Cash to Card Modification"
+                  if "card" in left_text
+                  else "Finance"
+              )
+          )
+          bill_match = re.search(r"\b(?:inv|bill|txn)[-_/\w\d]+\b", left_text)
+          bill_no = bill_match.group(0) if bill_match else "N/A"
+          finance_meta.append(
+              {"bill_no": bill_no, "amount": amt, "remarks": remark}
+          )
+        elif any(
+            k in left_text
+            for k in ["srn", "sr", "sale return", "sales return", "doa"]
+        ):
+          sr_list.append(amt)
+          bill_match = re.search(r"\b(?:srn|inv|bill)[-_/\w\d]+\b", left_text)
+          bill_no = bill_match.group(0) if bill_match else "N/A"
+          sr_meta.append(
+              {"bill_no": bill_no, "amount": amt, "reason": "Sales Return"}
+          )
+        elif "extra items" in left_text:
+          edits_list.append(amt)
+
+  # Fallback for denomination
+  if not denom_val and deposit_val:
+    denom_val = deposit_val
+
+  # 1. Update store_data
+  db["store_data"][target_branch] = {
+      "DENOMINATION": denom_val,
+      "PENDING APPRVLS": format_excel_formula(pending_apprvls),
+      "FINANCE AMNT": format_excel_formula(finance_amnt),
+      "SR": format_excel_formula(sr_list),
+      "EDITS": format_excel_formula(edits_list),
+      "(KSP)'Sir's Approvals": format_excel_formula(ksp_approvals),
   }
 
-  lines = text.strip().split("\n")
-  for line in lines:
-    clean_line = line.strip().lower()
-    if not clean_line:
-      continue
+  # 2. Overwrite directly to manual_edits for instant table display
+  if target_branch not in db["manual_edits"]:
+    db["manual_edits"][target_branch] = {}
 
-    # Skip generic section headers so they don't get captured as line items
-    if clean_line in [
-        "approvals & sale returns",
-        "approvals & sale returns bill no's amount",
-        "date approvals & sale returns bill no's amount",
-        "cash denomination",
-    ]:
-      continue
+  if denom_val:
+    db["manual_edits"][target_branch]["DENOMINATION"] = str(denom_val)
+  if deposit_val:
+    db["manual_edits"][target_branch]["DEPOSIT"] = str(deposit_val)
+  if addins_val:
+    db["manual_edits"][target_branch]["AddinGS"] = str(addins_val)
+  if closing_val:
+    db["manual_edits"][target_branch]["CLOSING BALANCE"] = str(closing_val)
+  if pending_apprvls:
+    db["manual_edits"][target_branch]["PENDING APPRVLS"] = format_excel_formula(
+        pending_apprvls
+    )
+  if finance_amnt:
+    db["manual_edits"][target_branch]["FINANCE AMNT"] = format_excel_formula(
+        finance_amnt
+    )
+  if sr_list:
+    db["manual_edits"][target_branch]["SR"] = format_excel_formula(sr_list)
+  if edits_list:
+    db["manual_edits"][target_branch]["EDITS"] = format_excel_formula(
+        edits_list
+    )
+  if ksp_approvals:
+    db["manual_edits"][target_branch]["(KSP)'Sir's Approvals"] = (
+        format_excel_formula(ksp_approvals)
+    )
 
-    # Extract all numbers from the line
-    tokens = re.findall(r"\b\d+(?:,\d+)*(?:\.\d+)?\b", line)
-    clean_nums = []
-    for n in tokens:
-      val = extract_number(n)
-      if val is not None:
-        clean_nums.append(int(round(val)) if val.is_integer() else val)
+  db["metadata"][target_branch] = {"sr": sr_meta, "finance": finance_meta}
+  save_db(db)
 
-    # 1. Closing Balance
-    if "apx closing" in clean_line or "closing balance" in clean_line:
-      for n in clean_nums:
-        if n > 0:
-          extracted["closing_bal"] = n
-          break
 
-    # 2. Deposit Amount
-    elif "deposit" in clean_line:
-      for n in clean_nums:
-        if n > 0 and n not in [2000, 500, 200, 100, 50, 20, 10, 5]:
-          extracted["deposit"] = n
-          break
+# --- 3 DATA INGESTION COLUMNS ---
+col1, col2, col3 = st.columns([1.2, 1.2, 1.6])
 
-    # 3. Add Ins
-    elif (
-        "add in" in clean_line
-        or "add ins" in clean_line
-        or "addins" in clean_line
-    ):
-      for n in clean_nums:
-        if n > 0:
-          extracted["addins"] = n
-          break
+with col1:
+  ho_dump_file = st.file_uploader(
+      "📂 1. Upload Apex Dr Balance File",
+      type=["xlsx", "xls", "csv"],
+      key=f"ho_dump_{st.session_state.uploader_key}",
+  )
 
-    # 4. Denomination Total
-    elif clean_line.startswith("total") and "approval" not in clean_line:
-      non_zero = [n for n in clean_nums if n > 0]
-      if non_zero:
-        extracted["denom"] = non_zero[-1]
+with col2:
+  uploaded_files = st.file_uploader(
+      "📥 2. Store Screenshots (Batch Upload)",
+      type=["png", "jpg", "jpeg"],
+      accept_multiple_files=True,
+      key="store_screenshots_uploader",
+  )
 
-    # 5. Check if the line is purely denomination rows (e.g. "100 100 10000", "500 44 22000")
-    # If first number is a standard Indian currency note, skip treating as approval/SR
-    elif clean_nums and clean_nums[0] in [2000, 500, 200, 100, 50, 20, 10, 5]:
-      continue
+with col3:
+  st.markdown("##### 📸 3. Direct Snip & Instant Paste")
+  t_col1, t_col2 = st.columns([1.2, 2])
+  with t_col1:
+    target_branch_name = st.selectbox(
+        "Select Store:",
+        [b["BRANCH"] for b in selected_branches],
+        key="snip_paste_store",
+    )
+  with t_col2:
+    st.write("")
+    paste_res = paste_image_button(
+        label="📋 Paste Snip (Ctrl+V)",
+        background_color="#0E4C92",
+        hover_background_color="#1E88E5",
+        key="instant_snip_paste_btn",
+    )
 
-    # 6. Approvals (KSP)
-    elif any(k in clean_line for k in ["pavan", "santhosh", "sharan"]):
-      if clean_nums:
-        extracted["ksp_approvals"].append(clean_nums[-1])
-
-    # 7. Approvals (Admin/Others)
-    elif any(
-        k in clean_line
-        for k in [
-            "admin",
-            "mallesh",
-            "shiva",
-            "khan",
-            "naresh",
-            "coo",
-            "asm",
-            "javeed",
-            "trade license",
-        ]
-    ):
-      if clean_nums:
-        extracted["pending_apprvls"].append(clean_nums[-1])
-
-    # 8. Finance / Cashback / DBD
-    elif any(
-        k in clean_line
-        for k in [
-            "bajaj",
-            "idfc",
-            "cash back",
-            "cashback",
-            "cash to card",
-            "upi",
-            "dbd",
-            "finance",
-        ]
-    ):
-      if clean_nums:
-        amt = clean_nums[-1]
-        extracted["finance_amnt"].append(amt)
-        remark = "Finance"
-        if "cashback" in clean_line or "cash back" in clean_line:
-          remark = "Cash Back"
-        elif "cash to card" in clean_line:
-          remark = "Cash to Card Modification"
-        elif "dbd" in clean_line:
-          remark = "DBD Modification"
-
-        bill_match = re.search(r"\b(?:inv|bill|txn)[-_/\w\d]+\b", line, re.I)
-        bill_no = bill_match.group(0) if bill_match else "N/A"
-        extracted["finance_meta"].append(
-            {"bill_no": bill_no, "amount": amt, "remarks": remark}
-        )
-
-    # 9. Sales Return (SR) - Only if line actually contains SR / SRN / Sale Return
-    elif any(
-        k in clean_line
-        for k in ["srn", "sr ", " sr", "sale return", "sales return", "doa"]
-    ):
-      if clean_nums:
-        amt = clean_nums[-1]
-        extracted["sr_list"].append(amt)
-        bill_match = re.search(r"\b(?:srn|inv|bill)[-_/\w\d]+\b", line, re.I)
-        bill_no = bill_match.group(0) if bill_match else "N/A"
-        extracted["sr_meta"].append(
-            {"bill_no": bill_no, "amount": amt, "reason": "Sales Return"}
-        )
-
-    # 10. Edits / Extra
-    elif "extra" in clean_line or "edit" in clean_line:
-      if clean_nums:
-        extracted["edits_list"].append(clean_nums[-1])
-
-  # Fallback if denom wasn't found separately
-  if not extracted["denom"] and extracted["deposit"]:
-    extracted["denom"] = extracted["deposit"]
-
-  return extracted
-
+  if paste_res.image_data is not None:
+    img_np = np.array(paste_res.image_data)
+    with st.spinner(f"Processing Cashbook Snip for {target_branch_name}..."):
+      process_cashbook_ocr(img_np, target_branch_name)
+      st.success(
+          f"✅ **{target_branch_name}** Cashbook processed & updated"
+          " instantly!"
+      )
+      st.rerun()
 
 # Add New Store Dynamically
 with st.expander("➕ Add New Store to Master"):
@@ -422,108 +528,6 @@ with st.expander("➕ Add New Store to Master"):
           st.rerun()
       else:
         st.error("Please enter both Store Code and Store Name.")
-
-
-# --- 3 DATA INGESTION COLUMNS ---
-col1, col2, col3 = st.columns([1.2, 1.2, 1.6])
-
-with col1:
-  ho_dump_file = st.file_uploader(
-      "📂 1. Upload Apex Dr Balance File",
-      type=["xlsx", "xls", "csv"],
-      key=f"ho_dump_{st.session_state.uploader_key}",
-  )
-
-with col2:
-  uploaded_files = st.file_uploader(
-      "📥 2. Store Screenshots (OCR)",
-      type=["png", "jpg", "jpeg"],
-      accept_multiple_files=True,
-      key="store_screenshots_uploader",
-  )
-
-with col3:
-  with st.expander("⚡ 3. Direct Outlook Table Paste (Instant)", expanded=True):
-    target_store_name = st.selectbox(
-        "Select Store:",
-        [b["BRANCH"] for b in selected_branches],
-        key="quick_paste_store",
-    )
-    pasted_box = st.text_area(
-        "Paste Outlook Mail Table/Text:",
-        placeholder="Copy table/text from Outlook -> Paste here (Ctrl+V)...",
-        height=80,
-        key="quick_paste_box",
-    )
-    if st.button(
-        "🚀 Map Data to Store", use_container_width=True, key="btn_map_paste"
-    ):
-      if pasted_box.strip():
-        res = parse_outlook_text(pasted_box)
-
-        # 1. Update store_data
-        db["store_data"][target_store_name] = {
-            "DENOMINATION": res["denom"],
-            "PENDING APPRVLS": format_excel_formula(res["pending_apprvls"]),
-            "FINANCE AMNT": format_excel_formula(res["finance_amnt"]),
-            "SR": format_excel_formula(res["sr_list"]),
-            "EDITS": format_excel_formula(res["edits_list"]),
-            "(KSP)'Sir's Approvals": format_excel_formula(
-                res["ksp_approvals"]
-            ),
-        }
-
-        # 2. Reset and overwrite manual_edits for clean mapping
-        if target_store_name not in db["manual_edits"]:
-          db["manual_edits"][target_store_name] = {}
-
-        db["manual_edits"][target_store_name]["DENOMINATION"] = (
-            str(res["denom"]) if res["denom"] else ""
-        )
-        db["manual_edits"][target_store_name]["DEPOSIT"] = (
-            str(res["deposit"]) if res["deposit"] else ""
-        )
-        db["manual_edits"][target_store_name]["AddinGS"] = (
-            str(res["addins"]) if res["addins"] else ""
-        )
-        db["manual_edits"][target_store_name]["CLOSING BALANCE"] = (
-            str(res["closing_bal"]) if res["closing_bal"] else ""
-        )
-        db["manual_edits"][target_store_name]["PENDING APPRVLS"] = (
-            format_excel_formula(res["pending_apprvls"])
-        )
-        db["manual_edits"][target_store_name]["FINANCE AMNT"] = (
-            format_excel_formula(res["finance_amnt"])
-        )
-        db["manual_edits"][target_store_name]["SR"] = format_excel_formula(
-            res["sr_list"]
-        )
-        db["manual_edits"][target_store_name]["EDITS"] = format_excel_formula(
-            res["edits_list"]
-        )
-        db["manual_edits"][target_store_name]["(KSP)'Sir's Approvals"] = (
-            format_excel_formula(res["ksp_approvals"])
-        )
-
-        # 3. Store metadata for hover preview
-        db["metadata"][target_store_name] = {
-            "sr": res["sr_meta"],
-            "finance": res["finance_meta"],
-        }
-
-        save_db(db)
-        st.success(f"✅ Cleanly mapped to **{target_store_name}**!")
-        st.rerun()
-      else:
-        st.warning("Please paste some text/table first.")
-
-
-@st.cache_resource
-def load_ocr():
-  return easyocr.Reader(["en"])
-
-
-reader = load_ocr()
 
 # Process HO Dump File
 if ho_dump_file:
@@ -590,13 +594,12 @@ if ho_dump_file:
     except Exception as e:
       st.error(f"Error reading HO Dump file: {e}")
 
-# Process Store Screenshots (OCR)
+# Process Batch Screenshots (OCR)
 if uploaded_files:
   with st.spinner("Processing screenshots and mapping data..."):
     for file in uploaded_files:
       image = Image.open(file)
       img_np = np.array(image)
-      height, width = img_np.shape[:2]
 
       ocr_results = reader.readtext(img_np)
       full_text = " ".join([r[1] for r in ocr_results]).lower()
@@ -620,126 +623,8 @@ if uploaded_files:
           matched_branch = b["BRANCH"]
           break
 
-      if not matched_branch:
-        continue
-
-      boxes = []
-      for bbox, text, conf in ocr_results:
-        cx = (bbox[0][0] + bbox[1][0]) / 2
-        cy = (bbox[0][1] + bbox[2][1]) / 2
-        boxes.append({"x": cx, "y": cy, "text": text.strip()})
-
-      boxes.sort(key=lambda b: b["y"])
-      rows = []
-      for b in boxes:
-        placed = False
-        for r in rows:
-          if abs(r["y"] - b["y"]) <= 18:
-            r["items"].append(b)
-            r["y"] = sum(i["y"] for i in r["items"]) / len(r["items"])
-            placed = True
-            break
-        if not placed:
-          rows.append({"y": b["y"], "items": [b]})
-
-      for r in rows:
-        r["items"].sort(key=lambda item: item["x"])
-
-      denom_val = ""
-      pending_apprvls, finance_amnt, sr_list, edits_list, ksp_approvals = (
-          [],
-          [],
-          [],
-          [],
-          [],
-      )
-
-      for r in rows:
-        left_items = [i for i in r["items"] if i["x"] <= width * 0.68]
-        right_items = [i for i in r["items"] if i["x"] > width * 0.68]
-
-        if any("total" in i["text"].lower() for i in right_items):
-          for i in reversed(right_items):
-            val = extract_number(i["text"], round_val=False)
-            if val is not None and val > 0:
-              denom_val = int(round(val)) if val.is_integer() else val
-              break
-
-        left_text = " ".join([i["text"] for i in left_items]).lower()
-
-        if not any(
-            x in left_text
-            for x in [
-                "closing",
-                "deposit",
-                "diffrence",
-                "difference",
-                "total approval",
-                "excess",
-                "short",
-                "approvals & sale",
-                "add ins",
-                "addins",
-                "cash book",
-            ]
-        ):
-          amt = None
-          for i in left_items:
-            if i["x"] > width * 0.50:
-              val = extract_number(i["text"], round_val=False)
-              if val is not None and val > 0:
-                amt = int(round(val)) if val.is_integer() else val
-                break
-
-          if amt and amt > 0:
-            if any(k in left_text for k in ["pavan", "santhosh", "sharan"]):
-              ksp_approvals.append(amt)
-            elif any(
-                k in left_text
-                for k in [
-                    "admin",
-                    "mallesh",
-                    "shiva",
-                    "khan",
-                    "naresh",
-                    "coo",
-                    "asm",
-                    "javeed",
-                    "trade license",
-                ]
-            ):
-              pending_apprvls.append(amt)
-            elif any(
-                k in left_text
-                for k in [
-                    "bajaj",
-                    "idfc",
-                    "cash back",
-                    "cashback",
-                    "cash to card",
-                    "upi",
-                    "dbd",
-                ]
-            ):
-              finance_amnt.append(amt)
-            elif any(
-                k in left_text
-                for k in ["srn", "sr", "sale return", "sales return", "doa"]
-            ):
-              sr_list.append(amt)
-            elif "extra items" in left_text:
-              edits_list.append(amt)
-
-      db["store_data"][matched_branch] = {
-          "DENOMINATION": denom_val,
-          "PENDING APPRVLS": format_excel_formula(pending_apprvls),
-          "FINANCE AMNT": format_excel_formula(finance_amnt),
-          "SR": format_excel_formula(sr_list),
-          "EDITS": format_excel_formula(edits_list),
-          "(KSP)'Sir's Approvals": format_excel_formula(ksp_approvals),
-      }
-
-    save_db(db)
+      if matched_branch:
+        process_cashbook_ocr(img_np, matched_branch)
 
 # Build Master DataFrame for the Selected View
 final_rows = []
