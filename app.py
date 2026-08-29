@@ -161,7 +161,7 @@ def load_ocr():
 reader = load_ocr()
 
 def process_cashbook_ocr(img_np, target_branch):
-    """Bulletproof line-by-line OCR parser that accurately isolates voucher amounts."""
+    """Accurately parses all voucher amounts and separates Finance, SR, Pending Approvals."""
     height, width = img_np.shape[:2]
     ocr_results = reader.readtext(img_np)
     
@@ -218,7 +218,7 @@ def process_cashbook_ocr(img_np, target_branch):
         full_line_lower = full_line.lower()
 
         # Skip headers / structural rows
-        if any(h in full_line_lower for h in ["add ins", "addins", "total approval", "closing", "diffrence", "difference", "excess", "short"]):
+        if any(h in full_line_lower for h in ["add ins", "addins", "total approval", "closing", "diffrence", "difference", "excess", "short", "corporate", "date", "bill no"]):
             continue
 
         # Extract amounts: filter out dates and invoice segments
@@ -245,8 +245,6 @@ def process_cashbook_ocr(img_np, target_branch):
                 ksp_approvals.append(amount)
             elif "extra" in full_line_lower or "edit" in full_line_lower:
                 edits_list.append(amount)
-            elif any(k in full_line_lower for k in ["travel", "traveling", "auditor", "suresh", "admin", "mallesh", "shiva", "khan", "naresh", "coo", "asm", "javeed", "trade license", "expense", "bill", "courior", "damage"]):
-                pending_apprvls.append(amount)
             else:
                 pending_apprvls.append(amount)
 
@@ -257,7 +255,7 @@ def process_cashbook_ocr(img_np, target_branch):
     f_edits = format_excel_formula(edits_list)
     f_ksp = format_excel_formula(ksp_approvals)
 
-    # Overwrite database
+    # Overwrite in database & sync manual edits
     db["store_data"][target_branch] = {
         "DENOMINATION": f_denom,
         "PENDING APPRVLS": f_pending,
@@ -315,7 +313,8 @@ with c_ingest4:
             key=f"single_snip_{target_branch_name}"
         )
         if single_snip_file:
-            image = Image.open(single_snip_file)
+            snip_bytes = single_snip_file.read()
+            image = Image.open(io.BytesIO(snip_bytes))
             img_np = np.array(image)
             with st.spinner(f"Mapping cashbook to {target_branch_name}..."):
                 process_cashbook_ocr(img_np, target_branch_name)
@@ -503,6 +502,9 @@ column_config = {col: st.column_config.TextColumn(col) for col in [
     "(KSP)'Sir's Approvals", "CLOSING BALANCE", "REMARKS"
 ]}
 
+# Dynamic key ensures UI rerenders properly on new updates
+table_key = f"master_editor_{work_mode}_{len(selected_branches)}_{len(db['store_data'])}"
+
 edited_df = st.data_editor(
     df_master,
     use_container_width=True,
@@ -510,7 +512,7 @@ edited_df = st.data_editor(
     disabled=["Sl.No.", "CODE", "BRANCH"],
     column_config=column_config,
     num_rows="fixed",
-    key=f"master_data_editor_{work_mode}_{len(selected_branches)}"
+    key=table_key
 )
 
 # Persist manual edits directly
@@ -562,7 +564,7 @@ with c_down:
             "SWEEPER SALARY": manual.get("SWEEPER SALARY", ""),
             "EDITS": manual.get("EDITS", str(d.get("EDITS", ""))),
             "APX SHORTAGE": manual.get("APX SHORTAGE", ""),
-            "(KSP)'Sir's Approvals": manual.get("(KSP)'Sir's Approvals", str(d.get("(KSP)'Sir's Approvals", ""))),
+            "(KSP)'Sir's Approvals": manual.get("(KSP)'Sir's Approvals", str(d.get("(KSP)'Sir's Approvals", "")) ),
             "CLOSING BALANCE": manual.get("CLOSING BALANCE", ""),
             "REMARKS": manual.get("REMARKS", "")
         })
