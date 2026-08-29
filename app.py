@@ -14,12 +14,28 @@ st.set_page_config(page_title="Happi Cashbook Master", layout="wide", initial_si
 
 st.markdown("""
     <style>
-    .block-container { padding-top: 1rem; padding-bottom: 0rem; padding-left: 1.5rem; padding-right: 1.5rem; }
-    header {visibility: hidden;}
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
-    .main-title { font-size: 20px; font-weight: 700; color: #0E4C92; margin-bottom: 8px; display: flex; align-items: center; gap: 8px; }
+    /* Maximize container and remove all default margins */
+    .block-container { 
+        padding-top: 0.6rem !important; 
+        padding-bottom: 0rem !important; 
+        padding-left: 1rem !important; 
+        padding-right: 1rem !important; 
+        max-width: 100% !important;
+    }
+    header {visibility: hidden !important;}
+    #MainMenu {visibility: hidden !important;}
+    footer {visibility: hidden !important;}
+    .main-title { 
+        font-size: 18px; 
+        font-weight: 700; 
+        color: #0E4C92; 
+        margin-bottom: 4px; 
+        display: flex; 
+        align-items: center; 
+        gap: 8px; 
+    }
     .stSidebar { background-color: #f8fafc; }
+    iframe { height: calc(100vh - 65px) !important; width: 100% !important; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -367,7 +383,7 @@ if uploaded_files:
             process_cashbook_image(image, matched_branch)
 
 # --- TOP HEADER & DOWNLOAD BAR ---
-col_head1, col_head2 = st.columns([3, 1])
+col_head1, col_head2 = st.columns([3.5, 1])
 
 with col_head1:
     st.markdown(f'<div class="main-title">📊 HAPPI MOBILES - MASTER CASHBOOK WORKSPACE <span style="font-size: 13px; color: #64748b; font-weight: normal;">({len(selected_branches)} Stores Active)</span></div>', unsafe_allow_html=True)
@@ -482,8 +498,8 @@ luckysheet_html = f"""
     <script src="https://cdn.jsdelivr.net/npm/luckysheet/dist/plugins/js/plugin.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/luckysheet/dist/luckysheet.umd.js"></script>
     <style>
-        body {{ margin: 0; padding: 0; overflow: hidden; }}
-        #luckysheet {{ margin: 0px; padding: 0px; position: absolute; width: 100%; height: 86vh; left: 0px; top: 0px; }}
+        html, body {{ margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }}
+        #luckysheet {{ margin: 0px; padding: 0px; position: absolute; width: 100%; height: 100%; left: 0px; top: 0px; }}
     </style>
 </head>
 <body>
@@ -520,4 +536,4 @@ luckysheet_html = f"""
 </html>
 """
 
-components.html(luckysheet_html, height=750)
+components.html(luckysheet_html, height=890)
