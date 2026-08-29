@@ -8,16 +8,17 @@ import pandas as pd
 from PIL import Image
 import pytesseract
 import streamlit as st
+import streamlit.components.v1 as components
 
 st.set_page_config(page_title="Happi Cashbook Master", layout="wide", initial_sidebar_state="expanded")
 
 st.markdown("""
     <style>
     .block-container { 
-        padding-top: 0.8rem !important; 
+        padding-top: 0.5rem !important; 
         padding-bottom: 0rem !important; 
-        padding-left: 1.2rem !important; 
-        padding-right: 1.2rem !important; 
+        padding-left: 1rem !important; 
+        padding-right: 1rem !important; 
         max-width: 100% !important;
     }
     header {visibility: hidden !important;}
@@ -27,16 +28,15 @@ st.markdown("""
         font-size: 18px; 
         font-weight: 700; 
         color: #0E4C92; 
-        margin-bottom: 8px; 
+        margin-bottom: 4px; 
         display: flex; 
         align-items: center; 
         gap: 8px; 
     }
     .stSidebar { background-color: #f8fafc; }
+    iframe { height: calc(100vh - 65px) !important; width: 100% !important; }
     </style>
 """, unsafe_allow_html=True)
-
-DB_FILE = "cashbook_master_db.json"
 
 DEFAULT_BRANCHES = [
     {"CODE": "ADBD", "BRANCH": "ADILABAD"}, {"CODE": "AMP", "BRANCH": "AMALAPURAM"},
@@ -95,31 +95,8 @@ DEFAULT_BRANCHES = [
     {"CODE": "ZB", "BRANCH": "ZAHEERABAD"}
 ]
 
-if "uploader_key" not in st.session_state:
-    st.session_state.uploader_key = 0
-if "addins_key" not in st.session_state:
-    st.session_state.addins_key = 0
-
-def load_db():
-    if os.path.exists(DB_FILE):
-        try:
-            with open(DB_FILE, "r") as f:
-                return json.load(f)
-        except:
-            pass
-    return {
-        "branches": sorted(DEFAULT_BRANCHES, key=lambda x: x["BRANCH"].upper()),
-        "ho_balances": {},
-        "addins_data": {},
-        "store_data": {},
-        "manual_edits": {}
-    }
-
-def save_db(data):
-    with open(DB_FILE, "w") as f:
-        json.dump(data, f, indent=2)
-
-db = load_db()
+if "new_updates" not in st.session_state:
+    st.session_state.new_updates = {}
 
 def format_excel_formula(num_list):
     if not num_list:
@@ -181,35 +158,16 @@ def process_cashbook_image(pil_img, target_branch):
             if tot_nums:
                 denom_val = str(int(float(tot_nums[-1].replace(",", ""))))
 
-    f_denom = str(denom_val) if denom_val else ""
-    f_pending = format_excel_formula(pending_apprvls)
-    f_finance = format_excel_formula(finance_amnt)
-    f_sr = format_excel_formula(sr_list)
-    f_edits = format_excel_formula(edits_list)
-    f_ksp = format_excel_formula(ksp_approvals)
-
-    db["store_data"][target_branch] = {
-        "DENOMINATION": f_denom,
-        "PENDING APPRVLS": f_pending,
-        "FINANCE AMNT": f_finance,
-        "SR": f_sr,
-        "EDITS": f_edits,
-        "(KSP)'Sir's Approvals": f_ksp
+    st.session_state.new_updates[target_branch] = {
+        "DENOMINATION": denom_val,
+        "PENDING APPRVLS": format_excel_formula(pending_apprvls),
+        "FINANCE AMNT": format_excel_formula(finance_amnt),
+        "SR": format_excel_formula(sr_list),
+        "EDITS": format_excel_formula(edits_list),
+        "(KSP)'Sir's Approvals": format_excel_formula(ksp_approvals)
     }
-    
-    if target_branch not in db["manual_edits"]:
-        db["manual_edits"][target_branch] = {}
-        
-    db["manual_edits"][target_branch]["DENOMINATION"] = f_denom
-    db["manual_edits"][target_branch]["PENDING APPRVLS"] = f_pending
-    db["manual_edits"][target_branch]["FINANCE AMNT"] = f_finance
-    db["manual_edits"][target_branch]["SR"] = f_sr
-    db["manual_edits"][target_branch]["EDITS"] = f_edits
-    db["manual_edits"][target_branch]["(KSP)'Sir's Approvals"] = f_ksp
-    
-    save_db(db)
 
-# --- SIDEBAR: SMART ENTERPRISE CONTROL PANEL ---
+# --- SIDEBAR CONTROL PANEL ---
 with st.sidebar:
     st.markdown("### 🏢 Happi Control Hub")
     
@@ -219,23 +177,15 @@ with st.sidebar:
         label_visibility="collapsed"
     )
 
-    all_branches = db["branches"]
-    total_branches_count = len(all_branches)
+    all_branches = sorted(DEFAULT_BRANCHES, key=lambda x: x["BRANCH"].upper())
     selected_branches = all_branches
 
     if work_mode == "👥 Two Cashiers (Split 50-50)":
-        mid_point = math.ceil(total_branches_count / 2)
+        mid_point = math.ceil(len(all_branches) / 2)
         c1_branches = all_branches[:mid_point]
         c2_branches = all_branches[mid_point:]
-        
-        c1_label = f"Cashier 1 ({len(c1_branches)} Stores)"
-        c2_label = f"Cashier 2 ({len(c2_branches)} Stores)"
-        
-        cashier_view = st.selectbox("Current Cashier:", [c1_label, c2_label])
-        if cashier_view == c1_label:
-            selected_branches = c1_branches
-        else:
-            selected_branches = c2_branches
+        cashier_view = st.selectbox("Current Cashier:", [f"Cashier 1 ({len(c1_branches)} Stores)", f"Cashier 2 ({len(c2_branches)} Stores)"])
+        selected_branches = c1_branches if "Cashier 1" in cashier_view else c2_branches
 
     st.markdown("---")
     with st.expander("📸 1. Single Store Snip (OCR)", expanded=True):
@@ -245,247 +195,255 @@ with st.sidebar:
             image = Image.open(single_snip_file)
             with st.spinner(f"Mapping {target_branch_name}..."):
                 process_cashbook_image(image, target_branch_name)
-                st.success(f"✅ Mapped to {target_branch_name}!")
+                st.success(f"✅ Mapped {target_branch_name}!")
                 st.rerun()
 
     with st.expander("📂 2. Apex Dr Balance File", expanded=False):
-        ho_dump_file = st.file_uploader("Upload Apex File", type=["xlsx", "xls", "csv"], key=f"ho_dump_{st.session_state.uploader_key}")
+        ho_dump_file = st.file_uploader("Upload Apex File", type=["xlsx", "xls", "csv"], key="ho_dump")
 
     with st.expander("📥 3. Addins Dump File", expanded=False):
-        addins_dump_file = st.file_uploader("Upload Addins File", type=["xlsx", "xls", "csv"], key=f"addins_dump_{st.session_state.addins_key}")
-
-    with st.expander("📁 4. Batch Screenshots OCR", expanded=False):
-        uploaded_files = st.file_uploader("Upload Batch Snips", type=["png", "jpg", "jpeg"], accept_multiple_files=True, key="store_screenshots_uploader")
+        addins_dump_file = st.file_uploader("Upload Addins File", type=["xlsx", "xls", "csv"], key="addins_dump")
 
     st.markdown("---")
     st.markdown("#### ⚙️ Data Actions")
-    if st.button("🗑️ Clear Dr Balances", use_container_width=True):
-        db["ho_balances"] = {}
-        for b_name in db["manual_edits"]:
-            db["manual_edits"][b_name]["OPENING BALANCE"] = ""
-        save_db(db)
-        st.session_state.uploader_key += 1
+    if st.button("🧹 Clear & Reset All Data", use_container_width=True):
+        st.session_state.clear_local_storage = True
+        st.session_state.new_updates = {}
         st.rerun()
 
-    if st.button("🗑️ Clear Addins Only", use_container_width=True):
-        db["addins_data"] = {}
-        for b_name in db["manual_edits"]:
-            db["manual_edits"][b_name]["AddinGS"] = ""
-        save_db(db)
-        st.session_state.addins_key += 1
-        st.rerun()
-
-    if st.button("🧹 Reset All Store Records", use_container_width=True):
-        db["store_data"] = {}
-        db["manual_edits"] = {}
-        save_db(db)
-        st.rerun()
-
-# --- BACKGROUND DATA PROCESSING ---
+# Process Ingestions into Session Updates
 if addins_dump_file:
-    current_addins_id = f"{addins_dump_file.name}_{addins_dump_file.size}"
-    if st.session_state.get("last_addins_file") != current_addins_id:
-        try:
-            df_addins = pd.read_csv(addins_dump_file) if addins_dump_file.name.endswith(".csv") else pd.read_excel(addins_dump_file)
-            branch_col, amt_col = None, None
-            for col in df_addins.columns:
-                c_low = str(col).lower()
-                if "branch" in c_low or "store" in c_low or "name" in c_low: branch_col = col
-                elif "amount" in c_low or "amt" in c_low or "value" in c_low or "total" in c_low or "addin" in c_low: amt_col = col
-            if branch_col is None: branch_col = df_addins.columns[0]
-            if amt_col is None: amt_col = df_addins.columns[1] if len(df_addins.columns) > 1 else df_addins.columns[0]
+    try:
+        df_addins = pd.read_csv(addins_dump_file) if addins_dump_file.name.endswith(".csv") else pd.read_excel(addins_dump_file)
+        b_col, a_col = df_addins.columns[0], df_addins.columns[1] if len(df_addins.columns) > 1 else df_addins.columns[0]
+        for col in df_addins.columns:
+            if "branch" in str(col).lower() or "store" in str(col).lower(): b_col = col
+            if "amount" in str(col).lower() or "total" in str(col).lower() or "addin" in str(col).lower(): a_col = col
 
-            addins_dict = {}
-            for idx, row in df_addins.iterrows():
-                b_val = normalize_name(row[branch_col])
-                raw_amt = str(row[amt_col]).replace(",", "").strip()
-                match = re.search(r"(\d+\.?\d*)", raw_amt)
-                if match:
-                    clean_amt = int(round(float(match.group(1))))
-                    if b_val and clean_amt > 0:
-                        if b_val not in addins_dict: addins_dict[b_val] = []
-                        addins_dict[b_val].append(clean_amt)
+        addins_dict = {}
+        for _, row in df_addins.iterrows():
+            b_val, raw_amt = normalize_name(row[b_col]), str(row[a_col]).replace(",", "").strip()
+            match = re.search(r"(\d+\.?\d*)", raw_amt)
+            if match and b_val:
+                clean_amt = int(round(float(match.group(1))))
+                if clean_amt > 0:
+                    addins_dict.setdefault(b_val, []).append(clean_amt)
 
-            for b in db["branches"]:
-                b_norm, b_code_norm = normalize_name(b["BRANCH"]), normalize_name(b["CODE"])
-                vouchers = addins_dict.get(b_norm, addins_dict.get(b_code_norm, []))
-                if vouchers:
-                    formula_val = format_excel_formula(vouchers)
-                    db["addins_data"][b["BRANCH"]] = formula_val
-                    if b["BRANCH"] not in db["manual_edits"]: db["manual_edits"][b["BRANCH"]] = {}
-                    db["manual_edits"][b["BRANCH"]]["AddinGS"] = formula_val
-
-            save_db(db)
-            st.session_state.last_addins_file = current_addins_id
-            st.rerun()
-        except Exception as e:
-            st.sidebar.error(f"Error Addins: {e}")
+        for b in all_branches:
+            vouchers = addins_dict.get(normalize_name(b["BRANCH"]), addins_dict.get(normalize_name(b["CODE"]), []))
+            if vouchers:
+                st.session_state.new_updates.setdefault(b["BRANCH"], {})["AddinGS"] = format_excel_formula(vouchers)
+        st.sidebar.success("✅ Addins Loaded!")
+    except Exception as e:
+        st.sidebar.error(f"Addins Error: {e}")
 
 if ho_dump_file:
-    current_file_id = f"{ho_dump_file.name}_{ho_dump_file.size}"
-    if st.session_state.get("last_processed_file") != current_file_id:
-        try:
-            df_dump = pd.read_csv(ho_dump_file) if ho_dump_file.name.endswith(".csv") else pd.read_excel(ho_dump_file)
-            branch_col, bal_col = None, None
-            for col in df_dump.columns:
-                c_low = str(col).lower()
-                if "branch" in c_low or "store" in c_low or "name" in c_low: branch_col = col
-                elif "balance" in c_low or "opening" in c_low or "dr" in c_low or "amount" in c_low: bal_col = col
-            if branch_col is None: branch_col = df_dump.columns[0]
-            if bal_col is None: bal_col = df_dump.columns[1] if len(df_dump.columns) > 1 else df_dump.columns[0]
+    try:
+        df_dump = pd.read_csv(ho_dump_file) if ho_dump_file.name.endswith(".csv") else pd.read_excel(ho_dump_file)
+        b_col, a_col = df_dump.columns[0], df_dump.columns[1] if len(df_dump.columns) > 1 else df_dump.columns[0]
+        for col in df_dump.columns:
+            if "branch" in str(col).lower() or "store" in str(col).lower(): b_col = col
+            if "balance" in str(col).lower() or "opening" in str(col).lower() or "amount" in str(col).lower(): a_col = col
 
-            dump_dict = {}
-            for idx, row in df_dump.iterrows():
-                b_val = normalize_name(row[branch_col])
-                raw_amt = str(row[bal_col]).replace(",", "").strip()
-                match = re.search(r"(\d+\.?\d*)", raw_amt)
-                if match:
-                    clean_amt = int(round(float(match.group(1))))
-                    if b_val and clean_amt is not None: dump_dict[b_val] = clean_amt
+        dump_dict = {}
+        for _, row in df_dump.iterrows():
+            b_val, raw_amt = normalize_name(row[b_col]), str(row[a_col]).replace(",", "").strip()
+            match = re.search(r"(\d+\.?\d*)", raw_amt)
+            if match and b_val:
+                dump_dict[b_val] = int(round(float(match.group(1))))
 
-            for b in db["branches"]:
-                b_norm, b_code_norm = normalize_name(b["BRANCH"]), normalize_name(b["CODE"])
-                if b_norm in dump_dict or b_code_norm in dump_dict:
-                    val = dump_dict.get(b_norm, dump_dict.get(b_code_norm))
-                    db["ho_balances"][b["BRANCH"]] = val
-                    if b["BRANCH"] not in db["manual_edits"]: db["manual_edits"][b["BRANCH"]] = {}
-                    db["manual_edits"][b["BRANCH"]]["OPENING BALANCE"] = str(val)
+        for b in all_branches:
+            val = dump_dict.get(normalize_name(b["BRANCH"]), dump_dict.get(normalize_name(b["CODE"])))
+            if val is not None:
+                st.session_state.new_updates.setdefault(b["BRANCH"], {})["OPENING BALANCE"] = str(val)
+        st.sidebar.success("✅ Apex Dr Balances Loaded!")
+    except Exception as e:
+        st.sidebar.error(f"Apex Error: {e}")
 
-            save_db(db)
-            st.session_state.last_processed_file = current_file_id
-            st.rerun()
-        except Exception as e:
-            st.sidebar.error(f"Error Apex File: {e}")
+# Header
+st.markdown(f'<div class="main-title">📊 HAPPI MOBILES - MASTER CASHBOOK WORKSPACE <span style="font-size: 13px; color: #64748b; font-weight: normal;">({len(selected_branches)} Stores Active)</span></div>', unsafe_allow_html=True)
 
-if uploaded_files:
-    for file in uploaded_files:
-        image = Image.open(file)
-        text_sample = pytesseract.image_to_string(image).lower()
-        matched_branch = None
-        for b in db["branches"]:
-            b_name_clean, b_code_clean, file_clean = b["BRANCH"].lower(), b["CODE"].lower(), file.name.lower()
-            if b_code_clean in file_clean or b_name_clean in file_clean or b_name_clean in text_sample or b_code_clean in text_sample:
-                matched_branch = b["BRANCH"]
-                break
-        if matched_branch:
-            process_cashbook_image(image, matched_branch)
+# Build Baseline Cell Matrix
+headers = [
+    "SL.No.", "CODE", "BRANCH", "OPENING BALANCE", "DEPOSIT", "DENOMINATION", 
+    "AddinGS", "PENDING APPRVLS", "FINANCE AMNT", "SR", "SWEEPER SALARY", 
+    "EDITS", "APX SHORTAGE", "(KSP)'Sir's Approvals", "CLOSING BALANCE", "REMARKS"
+]
 
-# --- TOP HEADER & DOWNLOAD BAR ---
-col_head1, col_head2 = st.columns([3.5, 1])
+header_map = {name: idx for idx, name in enumerate(headers)}
+baseline_celldata = []
 
-with col_head1:
-    st.markdown(f'<div class="main-title">📊 HAPPI MOBILES - MASTER CASHBOOK WORKSPACE <span style="font-size: 13px; color: #64748b; font-weight: normal;">({len(selected_branches)} Stores Active)</span></div>', unsafe_allow_html=True)
-
-# Build Dynamic Matrix with Auto-Calculating Closing Balance
-final_rows = []
-for idx, b in enumerate(selected_branches, start=1):
-    b_name = b["BRANCH"]
-    d = db["store_data"].get(b_name, {})
-    opening_bal = db["ho_balances"].get(b_name, "")
-    addins_val = db["addins_data"].get(b_name, "")
-    manual = db["manual_edits"].get(b_name, {})
-
-    # Auto calculate Excel Formula: =D2-SUM(E2:N2)
-    excel_row_num = idx + 1
-    default_closing_formula = f"=D{excel_row_num}-SUM(E{excel_row_num}:N{excel_row_num})"
-
-    final_rows.append({
-        "Sl.No.": idx,
-        "CODE": b["CODE"],
-        "BRANCH": b["BRANCH"],
-        "OPENING BALANCE": manual.get("OPENING BALANCE", str(opening_bal)),
-        "DEPOSIT": manual.get("DEPOSIT", ""),
-        "DENOMINATION": manual.get("DENOMINATION", str(d.get("DENOMINATION", ""))),
-        "AddinGS": manual.get("AddinGS", str(addins_val)),
-        "PENDING APPRVLS": manual.get("PENDING APPRVLS", str(d.get("PENDING APPRVLS", ""))),
-        "FINANCE AMNT": manual.get("FINANCE AMNT", str(d.get("FINANCE AMNT", ""))),
-        "SR": manual.get("SR", str(d.get("SR", ""))),
-        "SWEEPER SALARY": manual.get("SWEEPER SALARY", ""),
-        "EDITS": manual.get("EDITS", str(d.get("EDITS", ""))),
-        "APX SHORTAGE": manual.get("APX SHORTAGE", ""),
-        "(KSP)'Sir's Approvals": manual.get("(KSP)'Sir's Approvals", str(d.get("(KSP)'Sir's Approvals", ""))),
-        "CLOSING BALANCE": manual.get("CLOSING BALANCE", default_closing_formula),
-        "REMARKS": manual.get("REMARKS", "")
+for c_idx, h_text in enumerate(headers):
+    baseline_celldata.append({
+        "r": 0, "c": c_idx,
+        "v": { "v": h_text, "m": h_text, "bg": "#1e7082", "fc": "#ffffff", "bl": 1, "ht": 0, "vt": 0 }
     })
 
-df_master = pd.DataFrame(final_rows)
+for r_idx, b in enumerate(all_branches, start=1):
+    excel_row_num = r_idx + 1
+    default_closing_formula = f"=D{excel_row_num}-SUM(E{excel_row_num}:N{excel_row_num})"
 
-with col_head2:
-    all_rows_export = []
-    for idx, b in enumerate(db["branches"], start=1):
-        b_name = b["BRANCH"]
-        d = db["store_data"].get(b_name, {})
-        opening_bal = db["ho_balances"].get(b_name, "")
-        addins_val = db["addins_data"].get(b_name, "")
-        manual = db["manual_edits"].get(b_name, {})
-        excel_row_num = idx + 1
-        default_closing_formula = f"=D{excel_row_num}-SUM(E{excel_row_num}:N{excel_row_num})"
-
-        all_rows_export.append({
-            "Sl.No.": idx,
-            "CODE": b["CODE"],
-            "BRANCH": b["BRANCH"],
-            "OPENING BALANCE": manual.get("OPENING BALANCE", str(opening_bal)),
-            "DEPOSIT": manual.get("DEPOSIT", ""),
-            "DENOMINATION": manual.get("DENOMINATION", str(d.get("DENOMINATION", ""))),
-            "AddinGS": manual.get("AddinGS", str(addins_val)),
-            "PENDING APPRVLS": manual.get("PENDING APPRVLS", str(d.get("PENDING APPRVLS", ""))),
-            "FINANCE AMNT": manual.get("FINANCE AMNT", str(d.get("FINANCE AMNT", ""))),
-            "SR": manual.get("SR", str(d.get("SR", ""))),
-            "SWEEPER SALARY": manual.get("SWEEPER SALARY", ""),
-            "EDITS": manual.get("EDITS", str(d.get("EDITS", ""))),
-            "APX SHORTAGE": manual.get("APX SHORTAGE", ""),
-            "(KSP)'Sir's Approvals": manual.get("(KSP)'Sir's Approvals", str(d.get("(KSP)'Sir's Approvals", "")) ),
-            "CLOSING BALANCE": manual.get("CLOSING BALANCE", default_closing_formula),
-            "REMARKS": manual.get("REMARKS", "")
-        })
-
-    df_full_export = pd.DataFrame(all_rows_export)
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_full_export.to_excel(writer, index=False, sheet_name='MASTER REPORT')
-    excel_data = output.getvalue()
-
-    st.download_button(
-        label="📥 Download Master Excel",
-        data=excel_data,
-        file_name="HO_MASTER_CASHBOOK_REPORT.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        use_container_width=True
-    )
-
-# --- NATIVE FULL PERSISTENT DATA GRID ---
-column_config = {
-    col: st.column_config.TextColumn(col)
-    for col in [
-        "OPENING BALANCE", "DEPOSIT", "DENOMINATION", "AddinGS", "PENDING APPRVLS",
-        "FINANCE AMNT", "SR", "SWEEPER SALARY", "EDITS", "APX SHORTAGE",
-        "(KSP)'Sir's Approvals", "CLOSING BALANCE", "REMARKS"
+    row_vals = [
+        str(r_idx), b["CODE"], b["BRANCH"], "", "", "", "", "", "", "", "", "", "", "", default_closing_formula, ""
     ]
-}
 
-edited_df = st.data_editor(
-    df_master,
-    use_container_width=True,
-    height=800,
-    disabled=["Sl.No.", "CODE", "BRANCH"],
-    column_config=column_config,
-    num_rows="fixed",
-    key=f"persistent_cashbook_{work_mode}_{len(selected_branches)}"
-)
+    for c_idx, val in enumerate(row_vals):
+        if val:
+            cell_obj = {"r": r_idx, "c": c_idx, "v": {}}
+            if str(val).startswith("="):
+                cell_obj["v"]["f"] = str(val)
+            else:
+                try:
+                    num = float(str(val).replace(",", ""))
+                    cell_obj["v"]["v"] = int(round(num)) if num.is_integer() else num
+                    cell_obj["v"]["ct"] = {"fa": "General", "t": "n"}
+                except:
+                    cell_obj["v"]["v"] = str(val)
+                    cell_obj["v"]["ct"] = {"fa": "General", "t": "g"}
+            baseline_celldata.append(cell_obj)
 
-# REAL-TIME INSTANT SYNC TO SERVER DISK
-changes_made = False
-for idx, row in edited_df.iterrows():
-    b_name = row["BRANCH"]
-    if b_name not in db["manual_edits"]:
-        db["manual_edits"][b_name] = {}
+# Prepare JSON payloads
+branch_row_map = {b["BRANCH"]: idx + 1 for idx, b in enumerate(all_branches)}
+new_updates_json = json.dumps(st.session_state.new_updates)
+clear_flag = "true" if st.session_state.get("clear_local_storage", False) else "false"
+if st.session_state.get("clear_local_storage", False):
+    st.session_state.clear_local_storage = False
 
-    for col in ["OPENING BALANCE", "DEPOSIT", "DENOMINATION", "AddinGS", "PENDING APPRVLS", "FINANCE AMNT", "SR", "SWEEPER SALARY", "EDITS", "APX SHORTAGE", "(KSP)'Sir's Approvals", "CLOSING BALANCE", "REMARKS"]:
-        val_str = str(row[col]) if pd.notna(row[col]) else ""
-        if db["manual_edits"][b_name].get(col) != val_str:
-            db["manual_edits"][b_name][col] = val_str
-            changes_made = True
+luckysheet_html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/plugins/css/pluginsCss.css' />
+    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/plugins/plugins.css' />
+    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/css/luckysheet.css' />
+    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/assets/iconfont/iconfont.css' />
+    <script src="https://cdn.jsdelivr.net/npm/luckysheet/dist/plugins/js/plugin.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/luckysheet/dist/luckysheet.umd.js"></script>
+    <style>
+        html, body {{ margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }}
+        #luckysheet {{ margin: 0px; padding: 0px; position: absolute; width: 100%; height: 100%; left: 0px; top: 0px; }}
+    </style>
+</head>
+<body>
+    <div id="luckysheet"></div>
+    <script>
+        $(function () {{
+            const STORAGE_KEY = "HAPPI_PERMANENT_MASTER_CASHBOOK_GRID";
+            const clearFlag = {clear_flag};
+            if (clearFlag) {{
+                localStorage.removeItem(STORAGE_KEY);
+            }}
 
-if changes_made:
-    save_db(db)
+            let baselineData = {json.dumps(baseline_celldata)};
+            const branchMap = {json.dumps(branch_row_map)};
+            const headerMap = {json.dumps(header_map)};
+            const newUpdates = {new_updates_json};
+
+            // 1. Load saved data from permanent browser storage
+            let currentCells = [];
+            const saved = localStorage.getItem(STORAGE_KEY);
+            if (saved) {{
+                try {{
+                    currentCells = JSON.parse(saved);
+                }} catch(e) {{
+                    currentCells = baselineData;
+                }}
+            }} else {{
+                currentCells = baselineData;
+            }}
+
+            // Helper to update or insert cell
+            function setCellValue(r, c, val) {{
+                let found = false;
+                for (let i = 0; i < currentCells.length; i++) {{
+                    if (currentCells[i].r === r && currentCells[i].c === c) {{
+                        if (String(val).startsWith('=')) {{
+                            currentCells[i].v = {{ f: String(val) }};
+                        }} else {{
+                            let num = parseFloat(String(val).replace(/,/g, ''));
+                            if (!isNaN(num)) {{
+                                currentCells[i].v = {{ v: num, ct: {{ fa: "General", t: "n" }} }};
+                            }} else {{
+                                currentCells[i].v = {{ v: String(val), ct: {{ fa: "General", t: "g" }} }};
+                            }}
+                        }}
+                        found = true;
+                        break;
+                    }}
+                }}
+                if (!found) {{
+                    let cellObj = {{ r: r, c: c, v: {{}} }};
+                    if (String(val).startsWith('=')) {{
+                        cellObj.v.f = String(val);
+                    }} else {{
+                        let num = parseFloat(String(val).replace(/,/g, ''));
+                        if (!isNaN(num)) {{
+                            cellObj.v = {{ v: num, ct: {{ fa: "General", t: "n" }} }};
+                        }} else {{
+                            cellObj.v = {{ v: String(val), ct: {{ fa: "General", t: "g" }} }};
+                        }}
+                    }}
+                    currentCells.push(cellObj);
+                }}
+            }}
+
+            // 2. Merge newly ingested OCR / Excel data
+            if (newUpdates && Object.keys(newUpdates).length > 0) {{
+                for (let branch in newUpdates) {{
+                    if (branchMap[branch] !== undefined) {{
+                        let r = branchMap[branch];
+                        let fields = newUpdates[branch];
+                        for (let colName in fields) {{
+                            if (headerMap[colName] !== undefined) {{
+                                let c = headerMap[colName];
+                                setCellValue(r, c, fields[colName]);
+                            }}
+                        }}
+                    }}
+                }}
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(currentCells));
+            }}
+
+            // 3. Initialize Luckysheet with Auto-Saving Hook
+            luckysheet.create({{
+                container: 'luckysheet',
+                showinfobar: false,
+                showsheetbar: false,
+                showstatisticBar: true,
+                enableAddRow: false,
+                enableAddBackTop: false,
+                hook: {{
+                    cellUpdated: function(r, c, oldVal, newVal, isRefresh) {{
+                        setTimeout(() => {{
+                            try {{
+                                const allCells = luckysheet.getluckysheetfile()[0].celldata;
+                                localStorage.setItem(STORAGE_KEY, JSON.stringify(allCells));
+                            }} catch(err) {{}}
+                        }}, 200);
+                    }}
+                }},
+                data: [{{
+                    "name": "MASTER REPORT",
+                    "status": 1,
+                    "order": 0,
+                    "data": [],
+                    "config": {{
+                        "columnlen": {{
+                            "0": 55, "1": 75, "2": 150, "3": 130, "4": 90, "5": 110,
+                            "6": 100, "7": 130, "8": 110, "9": 90, "10": 120, "11": 90,
+                            "12": 110, "13": 140, "14": 130, "15": 120
+                        }}
+                    }},
+                    "celldata": currentCells,
+                    "row": {len(all_branches) + 5},
+                    "column": 18
+                }}]
+            }});
+        }});
+    </script>
+</body>
+</html>
+"""
+
+components.html(luckysheet_html, height=890)
