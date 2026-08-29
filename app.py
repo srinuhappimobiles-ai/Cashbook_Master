@@ -10,7 +10,6 @@ import pytesseract
 import streamlit as st
 import streamlit.components.v1 as components
 
-# Page configuration
 st.set_page_config(page_title="Happi Cashbook Master", layout="wide")
 
 st.markdown("""
@@ -109,7 +108,6 @@ db = load_db()
 if "addins_data" not in db:
     db["addins_data"] = {}
 
-# --- WORK ASSIGNMENT / CASHIER SPLIT SIDEBAR ---
 st.sidebar.title("👥 Work Assignment")
 work_mode = st.sidebar.radio(
     "Select Work Mode:",
@@ -129,7 +127,6 @@ if work_mode == "👥 Two Cashiers (Split 50-50)":
     c2_label = f"Cashier 2 ({len(c2_branches)} Stores: {c2_branches[0]['BRANCH']} to {c2_branches[-1]['BRANCH']})"
     
     cashier_view = st.sidebar.selectbox("Choose Your Cashier Assignment:", [c1_label, c2_label])
-    
     if cashier_view == c1_label:
         selected_branches = c1_branches
         st.sidebar.success(f"Loaded Cashier 1: **{len(selected_branches)}** Stores")
@@ -139,7 +136,6 @@ if work_mode == "👥 Two Cashiers (Split 50-50)":
 else:
     st.sidebar.info(f"Loaded All: **{len(selected_branches)}** Stores")
 
-# --- HELPER FUNCTIONS ---
 def format_excel_formula(num_list):
     if not num_list:
         return ""
@@ -156,7 +152,6 @@ def normalize_name(s):
     return re.sub(r"[^A-Za-z0-9]", "", str(s)).upper()
 
 def process_cashbook_image(pil_img, target_branch):
-    """Ultra-lightweight OCR using Tesseract."""
     text_data = pytesseract.image_to_string(pil_img)
     lines = [l.strip() for l in text_data.split("\n") if l.strip()]
 
@@ -169,7 +164,6 @@ def process_cashbook_image(pil_img, target_branch):
 
     for line in lines:
         line_lower = line.lower()
-
         if any(h in line_lower for h in ["apx closing", "closing balance", "add ins", "addins", "total approval", "difference", "diffrence", "excess", "short", "corporate", "date", "bill no"]):
             continue
 
@@ -186,7 +180,6 @@ def process_cashbook_image(pil_img, target_branch):
 
         if valid_nums:
             amount = valid_nums[-1]
-
             if any(k in line_lower for k in ["bajaj", "idfc", "cash back", "cashback", "cash to card", "upi", "dbd", "finance"]):
                 finance_amnt.append(amount)
             elif any(k in line_lower for k in ["sales return", "sale return", "srn", "sr/", "doa", "return", "sr "]):
@@ -233,7 +226,6 @@ def process_cashbook_image(pil_img, target_branch):
     
     save_db(db)
 
-# --- 4 DATA INGESTION COLUMNS ---
 c_ingest1, c_ingest2, c_ingest3, c_ingest4 = st.columns([1, 1, 1, 1.2])
 
 with c_ingest1:
@@ -256,7 +248,6 @@ with c_ingest4:
                 st.success(f"✅ Mapped to **{target_branch_name}** successfully!")
                 st.rerun()
 
-# --- PROCESS ADDINS DUMP FILE ---
 if addins_dump_file:
     current_addins_id = f"{addins_dump_file.name}_{addins_dump_file.size}"
     if st.session_state.get("last_addins_file") != current_addins_id:
@@ -318,7 +309,6 @@ if addins_dump_file:
         except Exception as e:
             st.error(f"Error reading Addins file: {e}")
 
-# Process HO Dump File
 if ho_dump_file:
     current_file_id = f"{ho_dump_file.name}_{ho_dump_file.size}"
     if st.session_state.get("last_processed_file") != current_file_id:
@@ -372,7 +362,6 @@ if ho_dump_file:
         except Exception as e:
             st.error(f"Error reading HO Dump file: {e}")
 
-# Process Batch Screenshots (OCR)
 if uploaded_files:
     with st.spinner("Processing screenshots and mapping data..."):
         for file in uploaded_files:
@@ -395,14 +384,15 @@ if uploaded_files:
             if matched_branch:
                 process_cashbook_image(image, matched_branch)
 
-# --- PREPARE DATA ---
-headers = [
-    "Sl.No.", "CODE", "BRANCH", "OPENING BALANCE", "DEPOSIT", "DENOMINATION", 
+# Row 1 is Headers
+header_row = [
+    "SL.No.", "CODE", "BRANCH", "OPENING BALANCE", "DEPOSIT", "DENOMINATION", 
     "AddinGS", "PENDING APPRVLS", "FINANCE AMNT", "SR", "SWEEPER SALARY", 
     "EDITS", "APX SHORTAGE", "(KSP)'Sir's Approvals", "CLOSING BALANCE", "REMARKS"
 ]
 
-grid_rows = []
+# Row 2 onwards: Store Data
+grid_rows = [header_row]
 for idx, b in enumerate(selected_branches, start=1):
     b_name = b["BRANCH"]
     d = db["store_data"].get(b_name, {})
@@ -432,7 +422,6 @@ for idx, b in enumerate(selected_branches, start=1):
 
 st.subheader(f"📊 Head Office Master Cashbook ({len(selected_branches)} Stores Shown)")
 
-# Complete Excel-Engine with Formula Bar & Click Selection
 hot_html = f"""
 <!DOCTYPE html>
 <html>
@@ -441,18 +430,19 @@ hot_html = f"""
     <script src="https://cdn.jsdelivr.net/npm/handsontable/dist/handsontable.full.min.js"></script>
     <style>
         body {{ margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }}
-        #formulaBarContainer {{ display: flex; align-items: center; background: #f8f9fa; border: 1px solid #ddd; padding: 5px 8px; margin-bottom: 6px; }}
-        #cellAddress {{ width: 60px; font-weight: bold; color: #0E4C92; border-right: 1px solid #ccc; padding-right: 8px; text-align: center; }}
-        #formulaInput {{ flex-grow: 1; border: none; outline: none; background: transparent; padding-left: 10px; font-size: 13px; font-family: monospace; }}
+        #formulaBarContainer {{ display: flex; align-items: center; background: #f8f9fa; border: 1px solid #d4d4d4; padding: 4px 8px; margin-bottom: 6px; border-radius: 3px; }}
+        #cellAddress {{ width: 65px; font-weight: bold; color: #000; border-right: 1px solid #ccc; padding-right: 8px; text-align: center; font-size: 13px; }}
+        #formulaInput {{ flex-grow: 1; border: none; outline: none; background: transparent; padding-left: 10px; font-size: 13px; font-family: monospace; font-weight: 500; }}
         #excelGrid {{ width: 100%; height: 500px; overflow: hidden; font-size: 13px; }}
-        .handsontable th {{ background-color: #0E4C92 !important; color: white !important; font-weight: bold; height: 28px; text-align: center; }}
+        .handsontable th {{ background-color: #f3f3f3 !important; color: #000 !important; font-weight: normal; border: 1px solid #d4d4d4; }}
         .handsontable td {{ font-size: 12px; }}
+        .excel-header-row td {{ background-color: #1e7082 !important; color: #ffffff !important; font-weight: bold; text-align: center; }}
     </style>
 </head>
 <body>
     <div id="formulaBarContainer">
-        <div id="cellAddress">fx</div>
-        <input type="text" id="formulaInput" placeholder="Select a cell or type formula (e.g. =SUM(D1:G1) or =D1+E1)" />
+        <div id="cellAddress">A1</div>
+        <input type="text" id="formulaInput" placeholder="fx" />
     </div>
     <div id="excelGrid"></div>
     <script>
@@ -460,7 +450,8 @@ hot_html = f"""
         const formulaInput = document.getElementById('formulaInput');
         const cellAddress = document.getElementById('cellAddress');
         let rawData = {json.dumps(grid_rows)};
-        const headers = {json.dumps(headers)};
+
+        const excelCols = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P'];
 
         function colLetterToIndex(str) {{
             let num = 0;
@@ -479,69 +470,72 @@ hot_html = f"""
             return letter;
         }}
 
-        function evaluateFormula(val, tableData) {{
-            if (!val || typeof val !== 'string' || !val.startsWith('=')) return val;
+        function evaluateCell(r, c, tableData, callStack = new Set()) {{
+            const key = r + ',' + c;
+            if (callStack.has(key)) return 0;
+            callStack.add(key);
+
+            if (r === 0) return 0; // Header row
+            if (!tableData[r] || tableData[r][c] === undefined) return 0;
+
+            let val = tableData[r][c];
+            if (!val || typeof val !== 'string' || !val.startsWith('=')) {{
+                let num = parseFloat(String(val).replace(/,/g, '').trim());
+                return isNaN(num) ? 0 : num;
+            }}
+
             let expr = val.substring(1).trim().toUpperCase();
 
-            // Auto-complete unclosed SUM(
-            if (expr.startsWith('SUM(') && !expr.endsWith(')')) {{
-                expr = expr + ')';
-            }}
+            // Replace SUM(Range) like SUM(E2:N2)
+            expr = expr.replace(/SUM\\s*\\(([A-Z]+)(\\d+):([A-Z]+)(\\d+)\\)/g, function(match, c1, r1, c2, r2) {{
+                let startCol = colLetterToIndex(c1);
+                let startRow = parseInt(r1) - 1;
+                let endCol = colLetterToIndex(c2);
+                let endRow = parseInt(r2) - 1;
+                let sum = 0;
+                for (let rowIdx = Math.min(startRow, endRow); rowIdx <= Math.max(startRow, endRow); rowIdx++) {{
+                    for (let colIdx = Math.min(startCol, endCol); colIdx <= Math.max(startCol, endCol); colIdx++) {{
+                        sum += evaluateCell(rowIdx, colIdx, tableData, new Set(callStack));
+                    }}
+                }}
+                return sum;
+            }});
+
+            // Replace single cell references like D2, E2, N2
+            expr = expr.replace(/\\b([A-Z]+)(\\d+)\\b/g, function(match, colStr, rowStr) {{
+                let targetCol = colLetterToIndex(colStr);
+                let targetRow = parseInt(rowStr) - 1;
+                return evaluateCell(targetRow, targetCol, tableData, new Set(callStack));
+            }});
 
             try {{
-                // Handle SUM(Range) like SUM(D1:G1)
-                expr = expr.replace(/SUM\\(([A-Z]+)(\\d+):([A-Z]+)(\\d+)\\)/g, function(match, c1, r1, c2, r2) {{
-                    let startCol = colLetterToIndex(c1);
-                    let startRow = parseInt(r1) - 1;
-                    let endCol = colLetterToIndex(c2);
-                    let endRow = parseInt(r2) - 1;
-                    let sum = 0;
-                    for (let r = Math.min(startRow, endRow); r <= Math.max(startRow, endRow); r++) {{
-                        for (let c = Math.min(startCol, endCol); c <= Math.max(startCol, endCol); c++) {{
-                            if (tableData[r] && tableData[r][c] !== undefined) {{
-                                let cVal = evaluateFormula(tableData[r][c], tableData);
-                                let num = parseFloat(String(cVal).replace(/,/g, ''));
-                                if (!isNaN(num)) sum += num;
-                            }}
-                        }}
-                    }}
-                    return sum;
-                }});
-
-                // Handle single cell references like D1, E1
-                let resolved = expr.replace(/([A-Z]+)(\\d+)/g, function(match, colStr, rowStr) {{
-                    let c = colLetterToIndex(colStr);
-                    let r = parseInt(rowStr) - 1;
-                    if (tableData[r] && tableData[r][c] !== undefined) {{
-                        let cVal = evaluateFormula(tableData[r][c], tableData);
-                        let num = parseFloat(String(cVal).replace(/,/g, ''));
-                        return isNaN(num) ? 0 : num;
-                    }}
-                    return 0;
-                }});
-
-                if (/^[0-9+\\-*\\/().\\s]+$/.test(resolved)) {{
-                    let result = Function('"use strict";return (' + resolved + ')')();
-                    return Math.round(result * 100) / 100;
+                if (/^[0-9+\\-*\\/().\\s]+$/.test(expr)) {{
+                    let res = Function('"use strict";return (' + expr + ')')();
+                    return Math.round(res * 100) / 100;
                 }}
             }} catch (e) {{
-                return val;
+                return 0;
             }}
-            return val;
+            return 0;
         }}
 
         function excelRenderer(instance, td, row, col, prop, value, cellProperties) {{
             Handsontable.renderers.TextRenderer.apply(this, arguments);
+            if (row === 0) {{
+                td.className = 'excel-header-row';
+                cellProperties.readOnly = true;
+                return;
+            }}
             if (value && String(value).startsWith('=')) {{
-                let evaluated = evaluateFormula(value, instance.getData());
-                td.innerText = evaluated;
-                td.style.fontWeight = '500';
+                let calculated = evaluateCell(row, col, instance.getData());
+                td.innerText = calculated;
+                td.style.fontWeight = 'bold';
             }}
         }}
 
         const hot = new Handsontable(container, {{
             data: rawData,
-            colHeaders: headers,
+            colHeaders: excelCols,
             rowHeaders: true,
             height: 500,
             width: '100%',
@@ -549,9 +543,9 @@ hot_html = f"""
                 return {{ renderer: excelRenderer }};
             }},
             columns: [
-                {{ readOnly: true, className: 'htCenter' }},
-                {{ readOnly: true, className: 'htCenter' }},
-                {{ readOnly: true }},
+                {{ className: 'htCenter', width: 55 }},
+                {{ className: 'htCenter', width: 75 }},
+                {{ width: 140 }},
                 {{ type: 'text' }},
                 {{ type: 'text' }},
                 {{ type: 'text' }},
@@ -603,7 +597,6 @@ hot_html = f"""
 
 components.html(hot_html, height=560)
 
-# Export and Reset options
 c_down, c_reset_dr, c_reset_addins, c_reset_all = st.columns([2.5, 1, 1, 1.2])
 
 with c_down:
@@ -635,7 +628,6 @@ with c_down:
         })
 
     df_full_export = pd.DataFrame(all_rows_export)
-
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
         df_full_export.to_excel(writer, index=False, sheet_name='MASTER REPORT')
