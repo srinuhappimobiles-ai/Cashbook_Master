@@ -38,7 +38,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Default Google Sheet URL placeholder (can be configured directly in sidebar)
-DEFAULT_GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit"
+DEFAULT_GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1DnBO3WcJqCEB0bjkw3ZKyYo6jTzmmV6CaZT40wZqR-w/edit?usp=sharing"
 
 def get_embed_sheet_url(raw_url):
     """Converts a standard Google Sheet URL to an interactive full-screen embed URL."""
