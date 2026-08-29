@@ -14,15 +14,19 @@ st.set_page_config(
 st.markdown("""
     <style>
     .block-container { 
-        padding-top: 0.5rem !important; 
+        padding-top: 1rem !important; 
         padding-bottom: 0rem !important; 
         padding-left: 0.8rem !important; 
         padding-right: 0.8rem !important; 
         max-width: 100% !important;
     }
-    header {visibility: hidden !important;}
     #MainMenu {visibility: hidden !important;}
     footer {visibility: hidden !important;}
+    /* Keep sidebar toggle button visible and styled properly */
+    [data-testid="stSidebarCollapseButton"], [data-testid="stSidebarNav"] {
+        visibility: visible !important;
+        display: block !important;
+    }
     .main-title { 
         font-size: 18px; 
         font-weight: 700; 
@@ -38,7 +42,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # Default Google Sheet URL placeholder (can be configured directly in sidebar)
-DEFAULT_GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1DnBO3WcJqCEB0bjkw3ZKyYo6jTzmmV6CaZT40wZqR-w/edit?usp=sharing"
+DEFAULT_GOOGLE_SHEET_URL = "https://docs.google.com/spreadsheets/d/YOUR_SHEET_ID/edit"
 
 def get_embed_sheet_url(raw_url):
     """Converts a standard Google Sheet URL to an interactive full-screen embed URL."""
