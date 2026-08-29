@@ -274,7 +274,7 @@ if addins_dump_file:
             for idx, row in df_addins.iterrows():
                 b_val = normalize_name(row[branch_col])
                 raw_amt = str(row[amt_col]).replace(",", "").strip()
-                match = re.search(r"(\d+\.?d*)", raw_amt)
+                match = re.search(r"(\d+\.?\d*)", raw_amt)
                 if match:
                     clean_amt = int(round(float(match.group(1))))
                     if b_val and clean_amt > 0:
@@ -384,24 +384,41 @@ if uploaded_files:
             if matched_branch:
                 process_cashbook_image(image, matched_branch)
 
-# Row 1 is Column Names
-header_row = [
+# Prepare Luckysheet Cell Data
+headers = [
     "SL.No.", "CODE", "BRANCH", "OPENING BALANCE", "DEPOSIT", "DENOMINATION", 
     "AddinGS", "PENDING APPRVLS", "FINANCE AMNT", "SR", "SWEEPER SALARY", 
     "EDITS", "APX SHORTAGE", "(KSP)'Sir's Approvals", "CLOSING BALANCE", "REMARKS"
 ]
 
-# Row 2 onwards is Data
-grid_rows = [header_row]
-for idx, b in enumerate(selected_branches, start=1):
+celldata = []
+
+# Row 0: Headers (Green Background, White Text)
+for c_idx, h_text in enumerate(headers):
+    celldata.append({
+        "r": 0,
+        "c": c_idx,
+        "v": {
+            "v": h_text,
+            "m": h_text,
+            "bg": "#1e7082",
+            "fc": "#ffffff",
+            "bl": 1,
+            "ht": 0,
+            "vt": 0
+        }
+    })
+
+# Row 1 to N: Store Data
+for r_idx, b in enumerate(selected_branches, start=1):
     b_name = b["BRANCH"]
     d = db["store_data"].get(b_name, {})
     opening_bal = db["ho_balances"].get(b_name, "")
     addins_val = db["addins_data"].get(b_name, "")
     manual = db["manual_edits"].get(b_name, {})
 
-    row_data = [
-        str(idx),
+    row_vals = [
+        str(r_idx),
         b["CODE"],
         b["BRANCH"],
         str(manual.get("OPENING BALANCE", str(opening_bal))),
@@ -418,209 +435,90 @@ for idx, b in enumerate(selected_branches, start=1):
         str(manual.get("CLOSING BALANCE", "")),
         str(manual.get("REMARKS", ""))
     ]
-    grid_rows.append(row_data)
+
+    for c_idx, val in enumerate(row_vals):
+        if val:
+            cell_obj = {"r": r_idx, "c": c_idx, "v": {}}
+            if str(val).startswith("="):
+                cell_obj["v"]["f"] = str(val)
+            else:
+                try:
+                    num = float(str(val).replace(",", ""))
+                    cell_obj["v"]["v"] = int(round(num)) if num.is_integer() else num
+                    cell_obj["v"]["ct"] = {"fa": "General", "t": "n"}
+                except:
+                    cell_obj["v"]["v"] = str(val)
+                    cell_obj["v"]["ct"] = {"fa": "General", "t": "g"}
+            celldata.append(cell_obj)
 
 st.subheader(f"📊 Head Office Master Cashbook ({len(selected_branches)} Stores Shown)")
 
-hot_html = f"""
+# Luckysheet Full-Engine Excel Component
+luckysheet_html = f"""
 <!DOCTYPE html>
 <html>
 <head>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/handsontable/dist/handsontable.full.min.css">
-    <script src="https://cdn.jsdelivr.net/npm/handsontable/dist/handsontable.full.min.js"></script>
+    <meta charset="utf-8" />
+    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/plugins/css/pluginsCss.css' />
+    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/plugins/plugins.css' />
+    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/css/luckysheet.css' />
+    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/assets/iconfont/iconfont.css' />
+    <script src="https://cdn.jsdelivr.net/npm/luckysheet/dist/plugins/js/plugin.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/luckysheet/dist/luckysheet.umd.js"></script>
     <style>
-        body {{ margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }}
-        #formulaBarContainer {{ display: flex; align-items: center; background: #f8f9fa; border: 1px solid #d4d4d4; padding: 4px 8px; margin-bottom: 6px; border-radius: 3px; }}
-        #cellAddress {{ width: 65px; font-weight: bold; color: #000; border-right: 1px solid #ccc; padding-right: 8px; text-align: center; font-size: 13px; }}
-        #formulaInput {{ flex-grow: 1; border: none; outline: none; background: transparent; padding-left: 10px; font-size: 13px; font-family: monospace; font-weight: 500; }}
-        #excelGrid {{ width: 100%; height: 500px; overflow: hidden; font-size: 13px; }}
-        .handsontable th {{ background-color: #f3f3f3 !important; color: #000 !important; font-weight: normal; border: 1px solid #d4d4d4; }}
-        .handsontable td {{ font-size: 12px; }}
-        .excel-header-row td {{ background-color: #1e7082 !important; color: #ffffff !important; font-weight: bold; text-align: center; }}
+        body {{ margin: 0; padding: 0; }}
+        #luckysheet {{ margin: 0px; padding: 0px; position: absolute; width: 100%; height: 560px; left: 0px; top: 0px; }}
     </style>
 </head>
 <body>
-    <div id="formulaBarContainer">
-        <div id="cellAddress">A1</div>
-        <input type="text" id="formulaInput" placeholder="fx" />
-    </div>
-    <div id="excelGrid"></div>
+    <div id="luckysheet"></div>
     <script>
-        const container = document.getElementById('excelGrid');
-        const formulaInput = document.getElementById('formulaInput');
-        const cellAddress = document.getElementById('cellAddress');
-        let rawData = {json.dumps(grid_rows)};
-
-        const excelCols = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P'];
-
-        function colLetterToIndex(str) {{
-            let num = 0;
-            for (let i = 0; i < str.length; i++) {{
-                num = num * 26 + (str.charCodeAt(i) - 64);
-            }}
-            return num - 1;
-        }}
-
-        function indexToColLetter(colIndex) {{
-            let letter = '';
-            while (colIndex >= 0) {{
-                letter = String.fromCharCode((colIndex % 26) + 65) + letter;
-                colIndex = Math.floor(colIndex / 26) - 1;
-            }}
-            return letter;
-        }}
-
-        function evaluateCell(r, c, tableData, callStack = new Set()) {{
-            const key = r + ',' + c;
-            if (callStack.has(key)) return 0;
-            callStack.add(key);
-
-            if (r === 0) return 0;
-            if (!tableData[r] || tableData[r][c] === undefined) return 0;
-
-            let val = tableData[r][c];
-            if (!val || typeof val !== 'string' || !val.startsWith('=')) {{
-                let num = parseFloat(String(val).replace(/,/g, '').trim());
-                return isNaN(num) ? 0 : num;
-            }}
-
-            let expr = val.substring(1).trim().toUpperCase();
-
-            // Replace SUM(Range) like SUM(E2:N2)
-            expr = expr.replace(/SUM\\s*\\(([A-Z]+)(\\d+):([A-Z]+)(\\d+)\\)/g, function(match, c1, r1, c2, r2) {{
-                let startCol = colLetterToIndex(c1);
-                let startRow = parseInt(r1) - 1;
-                let endCol = colLetterToIndex(c2);
-                let endRow = parseInt(r2) - 1;
-                let sum = 0;
-                for (let rowIdx = Math.min(startRow, endRow); rowIdx <= Math.max(startRow, endRow); rowIdx++) {{
-                    for (let colIdx = Math.min(startCol, endCol); colIdx <= Math.max(startCol, endCol); colIdx++) {{
-                        sum += evaluateCell(rowIdx, colIdx, tableData, new Set(callStack));
-                    }}
-                }}
-                return sum;
-            }});
-
-            // Replace single cell references like D2, E2, N2
-            expr = expr.replace(/\\b([A-Z]+)(\\d+)\\b/g, function(match, colStr, rowStr) {{
-                let targetCol = colLetterToIndex(colStr);
-                let targetRow = parseInt(rowStr) - 1;
-                return evaluateCell(targetRow, targetCol, tableData, new Set(callStack));
-            }});
-
-            try {{
-                if (/^[0-9+\\-*\\/().\\s]+$/.test(expr)) {{
-                    let res = Function('"use strict";return (' + expr + ')')();
-                    return Math.round(res * 100) / 100;
-                }}
-            }} catch (e) {{
-                return 0;
-            }}
-            return 0;
-        }}
-
-        // Shifts row references when dragging formulas downwards
-        function shiftFormulaRows(formula, rowDelta) {{
-            if (!formula || typeof formula !== 'string' || !formula.startsWith('=')) return formula;
-            return formula.replace(/([A-Z]+)(\\d+)/g, function(match, colStr, rowStr) {{
-                let newRow = parseInt(rowStr) + rowDelta;
-                return colStr + newRow;
-            }});
-        }}
-
-        function excelRenderer(instance, td, row, col, prop, value, cellProperties) {{
-            Handsontable.renderers.TextRenderer.apply(this, arguments);
-            if (row === 0) {{
-                td.className = 'excel-header-row';
-                cellProperties.readOnly = true;
-                return;
-            }}
-            if (value && String(value).startsWith('=')) {{
-                let calculated = evaluateCell(row, col, instance.getData());
-                td.innerText = calculated;
-                td.style.fontWeight = 'bold';
-            }}
-        }}
-
-        const hot = new Handsontable(container, {{
-            data: rawData,
-            colHeaders: excelCols,
-            rowHeaders: true,
-            height: 500,
-            width: '100%',
-            fillHandle: true,
-            cells: function(row, col) {{
-                return {{ renderer: excelRenderer }};
-            }},
-            columns: [
-                {{ className: 'htCenter', width: 55 }},
-                {{ className: 'htCenter', width: 75 }},
-                {{ width: 140 }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }}
-            ],
-            stretchH: 'all',
-            manualColumnResize: true,
-            manualRowResize: true,
-            contextMenu: true,
-            autoWrapRow: true,
-            autoWrapCol: true,
-            copyPaste: true,
-            undo: true,
-            selectionMode: 'multiple',
-            licenseKey: 'non-commercial-and-evaluation'
-        }});
-
-        // Native Excel Autofill: Updates relative row numbers on drag
-        hot.addHook('beforeAutofillInsideData', function(cellCoords, direction, fillData) {{
-            if (direction === 'down') {{
-                for (let r = 0; r < fillData.length; r++) {{
-                    for (let c = 0; c < fillData[r].length; c++) {{
-                        let val = fillData[r][c];
-                        if (typeof val === 'string' && val.startsWith('=')) {{
-                            fillData[r][c] = shiftFormulaRows(val, r + 1);
+        $(function () {{
+            luckysheet.create({{
+                container: 'luckysheet',
+                showinfobar: false,
+                showsheetbar: false,
+                showstatisticBar: true,
+                enableAddRow: false,
+                enableAddBackTop: false,
+                data: [{{
+                    "name": "MASTER REPORT",
+                    "color": "",
+                    "status": 1,
+                    "order": 0,
+                    "data": [],
+                    "config": {{
+                        "columnlen": {{
+                            "0": 55,
+                            "1": 75,
+                            "2": 150,
+                            "3": 130,
+                            "4": 90,
+                            "5": 110,
+                            "6": 100,
+                            "7": 130,
+                            "8": 110,
+                            "9": 90,
+                            "10": 120,
+                            "11": 90,
+                            "12": 110,
+                            "13": 140,
+                            "14": 130,
+                            "15": 120
                         }}
-                    }}
-                }}
-            }}
-            return fillData;
-        }});
-
-        let currentActiveRow = -1;
-        let currentActiveCol = -1;
-
-        hot.addHook('afterSelection', function(r, c, r2, c2) {{
-            currentActiveRow = r;
-            currentActiveCol = c;
-            const colLetter = indexToColLetter(c);
-            cellAddress.innerText = colLetter + (r + 1);
-            const val = hot.getDataAtCell(r, c) || '';
-            formulaInput.value = val;
-        }});
-
-        formulaInput.addEventListener('keydown', function(e) {{
-            if (e.key === 'Enter' && currentActiveRow >= 0 && currentActiveCol >= 0) {{
-                hot.setDataAtCell(currentActiveRow, currentActiveCol, formulaInput.value);
-                hot.render();
-            }}
+                    }},
+                    "celldata": {json.dumps(celldata)},
+                    "row": {len(selected_branches) + 5},
+                    "column": 18
+                }}]
+            }});
         }});
     </script>
 </body>
 </html>
 """
 
-components.html(hot_html, height=560)
+components.html(luckysheet_html, height=580)
 
 c_down, c_reset_dr, c_reset_addins, c_reset_all = st.columns([2.5, 1, 1, 1.2])
 
