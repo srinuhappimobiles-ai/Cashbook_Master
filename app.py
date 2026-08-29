@@ -143,7 +143,7 @@ else:
 def extract_number(text_val):
     if text_val is None:
         return None
-    if re.search(r"\d{2}-\d{2}-\d{4}", str(text_val)):
+    if re.search(r"\d{2}[-/]\d{2}[-/]\d{2,4}", str(text_val)):
         return None
     clean = str(text_val).replace(",", "").strip()
     match = re.search(r"(\d+\.?\d*)", clean)
@@ -191,26 +191,26 @@ def process_cashbook_ocr(img_np, target_branch):
             "text": text.strip()
         })
 
-    # Boundaries: Strictly below ADD INS and above TOTAL APPROVAL
+    # Find boundaries
     y_start_approvals = 0
     y_end_approvals = height
     
     for b in boxes:
         t = b["text"].lower()
         if "add ins" in t or "addins" in t or "add in" in t:
-            y_start_approvals = max(y_start_approvals, b["y"] + 15)
+            y_start_approvals = max(y_start_approvals, b["y"] + 10)
         elif "total approval" in t or "excess" in t or "short" in t:
-            y_end_approvals = min(y_end_approvals, b["y"] - 10)
+            y_end_approvals = min(y_end_approvals, b["y"] - 5)
 
     # 1. Denomination Total
     denom_val = ""
-    right_boxes = [b for b in boxes if b["x"] > width * 0.68]
+    right_boxes = [b for b in boxes if b["x"] > width * 0.65]
     for b in right_boxes:
         if "total" in b["text"].lower():
             same_row_nums = [
                 extract_number(nb["text"]) 
                 for nb in right_boxes 
-                if abs(nb["y"] - b["y"]) <= 25 and extract_number(nb["text"])
+                if abs(nb["y"] - b["y"]) <= 25 and extract_number(nb["text"]) is not None
             ]
             if same_row_nums:
                 denom_val = str(same_row_nums[-1])
@@ -218,22 +218,21 @@ def process_cashbook_ocr(img_np, target_branch):
                 
     if not denom_val:
         for b in boxes:
-            if "deposit" in b["text"].lower() and b["x"] < width * 0.68:
+            if "deposit" in b["text"].lower() and b["x"] < width * 0.65:
                 val = extract_number(b["text"])
-                if val:
+                if val is not None:
                     denom_val = str(val)
                     break
 
-    # 2. Extract and Categorize Row-by-Row in Left Table (Approvals & Vouchers)
+    # 2. Extract and Categorize Row-by-Row in Left Table
     voucher_boxes = [b for b in boxes if y_start_approvals < b["y"] < y_end_approvals and b["x"] <= width * 0.72]
     
-    # Cluster boxes into horizontal rows
     voucher_boxes.sort(key=lambda b: b["y"])
     v_rows = []
     for b in voucher_boxes:
         placed = False
         for r in v_rows:
-            if abs(r["y"] - b["y"]) <= 18:
+            if abs(r["y"] - b["y"]) <= 22:
                 r["items"].append(b)
                 r["y"] = sum(i["y"] for i in r["items"]) / len(r["items"])
                 placed = True
@@ -248,14 +247,17 @@ def process_cashbook_ocr(img_np, target_branch):
     ksp_approvals = []
 
     for r in v_rows:
+        # Sort items in row left to right
+        r["items"].sort(key=lambda item: item["x"])
         row_text = " ".join([i["text"] for i in r["items"]]).lower()
         
-        # Find amount in this row
+        # Check if line contains pure text without valid amount
         amt = None
         for i in reversed(r["items"]):
-            if i["x"] > width * 0.38:
-                val = extract_number(i["text"])
-                if val and val > 0 and val not in [2000, 500, 200, 100, 50, 20, 10, 5]:
+            val = extract_number(i["text"])
+            if val is not None and val > 0 and val not in [2000, 500, 200, 100, 50, 20, 10, 5]:
+                # Check if number is not part of a date (like 2026)
+                if val not in [2024, 2025, 2026, 2027]:
                     amt = val
                     break
                     
@@ -272,11 +274,10 @@ def process_cashbook_ocr(img_np, target_branch):
             # 4. Extra Edits
             elif "extra" in row_text or "edit" in row_text:
                 edits_list.append(amt)
-            # 5. General Expenses / Pending Approvals (Auditor, Suresh, Traveling, Mallesh, Admin, etc.)
+            # 5. Pending Approvals (Auditor, Suresh, Traveling, Mallesh, Admin, Expenses, etc.)
             else:
                 pending_apprvls.append(amt)
 
-    # Format formulas
     f_denom = str(denom_val) if denom_val else ""
     f_pending = format_excel_formula(pending_apprvls)
     f_finance = format_excel_formula(finance_amnt)
@@ -284,7 +285,7 @@ def process_cashbook_ocr(img_np, target_branch):
     f_edits = format_excel_formula(edits_list)
     f_ksp = format_excel_formula(ksp_approvals)
 
-    # Update database
+    # Overwrite database
     db["store_data"][target_branch] = {
         "DENOMINATION": f_denom,
         "PENDING APPRVLS": f_pending,
@@ -524,7 +525,9 @@ for idx, b in enumerate(selected_branches, start=1):
 
 st.subheader(f"📊 Head Office Master Cashbook ({len(selected_branches)} Stores Shown)")
 
-# Handsontable Native Excel Spreadsheet Component
+# Unique key based on data content to force Handsontable re-render
+data_signature = hash(json.dumps(grid_rows))
+
 hot_html = f"""
 <!DOCTYPE html>
 <html>
