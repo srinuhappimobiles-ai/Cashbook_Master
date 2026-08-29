@@ -155,6 +155,7 @@ def load_db():
       "ho_balances": {},
       "store_data": {},
       "manual_edits": {},
+      "metadata": {},  # Stores SR/Finance Bill details for hover preview
   }
 
 
@@ -164,6 +165,8 @@ def save_db(data):
 
 
 db = load_db()
+if "metadata" not in db:
+  db["metadata"] = {}
 
 # --- WORK ASSIGNMENT / CASHIER SPLIT SIDEBAR ---
 st.sidebar.title("👥 Work Assignment")
@@ -197,51 +200,8 @@ if work_mode == "👥 Two Cashiers (Split 50-50)":
 else:
   st.sidebar.info(f"Loaded All: **{len(selected_branches)}** Stores")
 
-# Add New Store Dynamically
-with st.expander("➕ Add New Store to Master"):
-  c_add1, c_add2, c_add3 = st.columns([2, 3, 2])
-  with c_add1:
-    new_code = (
-        st.text_input("Store Code (e.g. MCHL)", key="new_code_input")
-        .strip()
-        .upper()
-    )
-  with c_add2:
-    new_branch = (
-        st.text_input("Store Name (e.g. MEDCHAL)", key="new_branch_input")
-        .strip()
-        .upper()
-    )
-  with c_add3:
-    st.write("")
-    st.write("")
-    if st.button("Add Store", use_container_width=True):
-      if new_code and new_branch:
-        existing = [b["BRANCH"].upper() for b in db["branches"]]
-        if new_branch in existing:
-          st.warning(f"Store '{new_branch}' already exists!")
-        else:
-          db["branches"].append({"CODE": new_code, "BRANCH": new_branch})
-          db["branches"] = sorted(
-              db["branches"], key=lambda x: x["BRANCH"].upper()
-          )
-          save_db(db)
-          st.success(
-              f"✅ Added '{new_branch}' successfully in alphabetical order!"
-          )
-          st.rerun()
-      else:
-        st.error("Please enter both Store Code and Store Name.")
 
-
-@st.cache_resource
-def load_ocr():
-  return easyocr.Reader(["en"])
-
-
-reader = load_ocr()
-
-
+# --- HELPER FUNCTIONS ---
 def extract_number(text_val, round_val=False):
   if text_val is None:
     return None
@@ -272,22 +232,171 @@ def normalize_name(s):
   return re.sub(r"[^A-Za-z0-9]", "", str(s)).upper()
 
 
-col1, col2 = st.columns(2)
+def parse_outlook_text(text):
+  """Extracts structured values from direct pasted Outlook text/tables."""
+  extracted = {
+      "denom": "",
+      "pending_apprvls": [],
+      "finance_amnt": [],
+      "sr_list": [],
+      "edits_list": [],
+      "ksp_approvals": [],
+      "sr_meta": [],
+      "finance_meta": [],
+  }
+
+  lines = text.strip().split("\n")
+  for line in lines:
+    clean_line = line.strip().lower()
+    if not clean_line:
+      continue
+
+    # Extract all numbers from the line
+    nums = re.findall(r"\b\d+(?:,\d+)*(?:\.\d+)?\b", line)
+    clean_nums = []
+    for n in nums:
+      val = extract_number(n)
+      if val is not None and val > 0:
+        clean_nums.append(int(round(val)) if val.is_integer() else val)
+
+    if not clean_nums:
+      continue
+
+    target_val = clean_nums[-1]
+
+    # Denomination / Closing Match
+    if any(k in clean_line for k in ["closing", "total", "denomination"]):
+      extracted["denom"] = target_val
+    elif any(k in clean_line for k in ["pavan", "santhosh", "sharan"]):
+      extracted["ksp_approvals"].append(target_val)
+    elif any(
+        k in clean_line
+        for k in [
+            "admin",
+            "mallesh",
+            "shiva",
+            "khan",
+            "naresh",
+            "coo",
+            "asm",
+            "javeed",
+            "trade license",
+        ]
+    ):
+      extracted["pending_apprvls"].append(target_val)
+    elif any(
+        k in clean_line
+        for k in [
+            "bajaj",
+            "idfc",
+            "cash back",
+            "cashback",
+            "cash to card",
+            "upi",
+            "dbd",
+            "finance",
+        ]
+    ):
+      extracted["finance_amnt"].append(target_val)
+      remark = "Finance"
+      if "cashback" in clean_line or "cash back" in clean_line:
+        remark = "Cash Back"
+      elif "cash to card" in clean_line:
+        remark = "Cash to Card Modification"
+      elif "dbd" in clean_line:
+        remark = "DBD Modification"
+
+      bill_match = re.search(r"\b(?:inv|bill|txn)[-_/\w\d]+\b", line, re.I)
+      bill_no = bill_match.group(0) if bill_match else "N/A"
+      extracted["finance_meta"].append(
+          {"bill_no": bill_no, "amount": target_val, "remarks": remark}
+      )
+    elif any(
+        k in clean_line
+        for k in ["srn", "sr", "sale return", "sales return", "doa"]
+    ):
+      extracted["sr_list"].append(target_val)
+      bill_match = re.search(r"\b(?:srn|inv|bill)[-_/\w\d]+\b", line, re.I)
+      bill_no = bill_match.group(0) if bill_match else "N/A"
+      extracted["sr_meta"].append({
+          "bill_no": bill_no,
+          "amount": target_val,
+          "reason": "Sales Return",
+      })
+    elif "extra" in clean_line or "edit" in clean_line:
+      extracted["edits_list"].append(target_val)
+
+  return extracted
+
+
+# --- 3 DATA INGESTION COLUMNS ---
+col1, col2, col3 = st.columns([1.2, 1.2, 1.6])
 
 with col1:
   ho_dump_file = st.file_uploader(
-      "📂 1. Upload HO Apex Dr Balance Dump File (Excel / CSV)",
+      "📂 1. Upload Apex Dr Balance File",
       type=["xlsx", "xls", "csv"],
       key=f"ho_dump_{st.session_state.uploader_key}",
   )
 
 with col2:
   uploaded_files = st.file_uploader(
-      "📥 2. Select Store Cashbook Screenshots",
+      "📥 2. Store Screenshots (OCR)",
       type=["png", "jpg", "jpeg"],
       accept_multiple_files=True,
       key="store_screenshots_uploader",
   )
+
+with col3:
+  with st.expander("⚡ 3. Direct Outlook Table Paste (Instant)", expanded=True):
+    target_store_name = st.selectbox(
+        "Select Store:",
+        [b["BRANCH"] for b in selected_branches],
+        key="quick_paste_store",
+    )
+    pasted_box = st.text_area(
+        "Paste Outlook Mail Table/Text:",
+        placeholder="Copy from Outlook -> Paste here (Ctrl+V)...",
+        height=70,
+        key="quick_paste_box",
+    )
+    if st.button(
+        "🚀 Map Data to Store", use_container_width=True, key="btn_map_paste"
+    ):
+      if pasted_box.strip():
+        res = parse_outlook_text(pasted_box)
+
+        # Update store data
+        db["store_data"][target_store_name] = {
+            "DENOMINATION": res["denom"],
+            "PENDING APPRVLS": format_excel_formula(res["pending_apprvls"]),
+            "FINANCE AMNT": format_excel_formula(res["finance_amnt"]),
+            "SR": format_excel_formula(res["sr_list"]),
+            "EDITS": format_excel_formula(res["edits_list"]),
+            "(KSP)'Sir's Approvals": format_excel_formula(
+                res["ksp_approvals"]
+            ),
+        }
+
+        # Store metadata for hover preview
+        db["metadata"][target_store_name] = {
+            "sr": res["sr_meta"],
+            "finance": res["finance_meta"],
+        }
+
+        save_db(db)
+        st.success(f"✅ Data mapped instantly to **{target_store_name}**!")
+        st.rerun()
+      else:
+        st.warning("Please paste some text/table first.")
+
+
+@st.cache_resource
+def load_ocr():
+  return easyocr.Reader(["en"])
+
+
+reader = load_ocr()
 
 # Process HO Dump File
 if ho_dump_file:
@@ -299,8 +408,7 @@ if ho_dump_file:
       else:
         df_dump = pd.read_excel(ho_dump_file)
 
-      branch_col = None
-      bal_col = None
+      branch_col, bal_col = None, None
       for col in df_dump.columns:
         c_low = str(col).lower()
         if "branch" in c_low or "store" in c_low or "name" in c_low:
@@ -352,7 +460,6 @@ if ho_dump_file:
       save_db(db)
       st.session_state.last_processed_file = current_file_id
       st.rerun()
-
     except Exception as e:
       st.error(f"Error reading HO Dump file: {e}")
 
@@ -412,11 +519,13 @@ if uploaded_files:
         r["items"].sort(key=lambda item: item["x"])
 
       denom_val = ""
-      pending_apprvls = []
-      finance_amnt = []
-      sr_list = []
-      edits_list = []
-      ksp_approvals = []
+      pending_apprvls, finance_amnt, sr_list, edits_list, ksp_approvals = (
+          [],
+          [],
+          [],
+          [],
+          [],
+      )
 
       for r in rows:
         left_items = [i for i in r["items"] if i["x"] <= width * 0.68]
@@ -545,10 +654,6 @@ df_master = pd.DataFrame(final_rows)
 st.subheader(
     f"📋 Head Office Master Cashbook ({len(selected_branches)} Stores Shown)"
 )
-st.info(
-    "💡 **Permanent Storage Active:** All data is permanently preserved even"
-    " after page reload or browser restart."
-)
 
 edited_df = st.data_editor(
     df_master,
@@ -610,7 +715,6 @@ save_db(db)
 c_down, c_reset = st.columns([4, 1.5])
 
 with c_down:
-  # Generate full master export containing all 107 stores
   all_rows_export = []
   for idx, b in enumerate(db["branches"], start=1):
     b_name = b["BRANCH"]
