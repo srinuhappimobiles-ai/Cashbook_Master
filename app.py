@@ -97,18 +97,26 @@ DEFAULT_BRANCHES = [
 
 @st.cache_resource
 def get_shared_db():
-    if os.path.exists(DB_FILE):
-        try:
-            with open(DB_FILE, "r") as f:
-                return json.load(f)
-        except:
-            pass
-    return {
+    data = {
         "branches": sorted(DEFAULT_BRANCHES, key=lambda x: x["BRANCH"].upper()),
         "entries": {}
     }
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, "r") as f:
+                loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    if "entries" in loaded:
+                        data["entries"] = loaded["entries"]
+                    elif "manual_edits" in loaded:
+                        data["entries"] = loaded["manual_edits"]
+        except Exception:
+            pass
+    return data
 
 db = get_shared_db()
+if "entries" not in db:
+    db["entries"] = {}
 
 def save_db():
     with open(DB_FILE, "w") as f:
@@ -185,7 +193,7 @@ def process_cashbook_image(pil_img, target_branch):
             if tot_nums:
                 denom_val = str(int(float(tot_nums[-1].replace(",", ""))))
 
-    store_entry = db["entries"].setdefault(target_branch, {})
+    store_entry = db.setdefault("entries", {}).setdefault(target_branch, {})
     if denom_val: store_entry["DENOMINATION"] = denom_val
     if pending_apprvls: store_entry["PENDING APPRVLS"] = format_excel_formula(pending_apprvls)
     if finance_amnt: store_entry["FINANCE AMNT"] = format_excel_formula(finance_amnt)
@@ -259,7 +267,7 @@ if addins_dump_file:
         for b in all_branches:
             vouchers = addins_dict.get(normalize_name(b["BRANCH"]), addins_dict.get(normalize_name(b["CODE"]), []))
             if vouchers:
-                db["entries"].setdefault(b["BRANCH"], {})["AddinGS"] = format_excel_formula(vouchers)
+                db.setdefault("entries", {}).setdefault(b["BRANCH"], {})["AddinGS"] = format_excel_formula(vouchers)
         save_db()
         st.sidebar.success("✅ Addins Synced Globally!")
     except Exception as e:
@@ -283,7 +291,7 @@ if ho_dump_file:
         for b in all_branches:
             val = dump_dict.get(normalize_name(b["BRANCH"]), dump_dict.get(normalize_name(b["CODE"])))
             if val is not None:
-                db["entries"].setdefault(b["BRANCH"], {})["OPENING BALANCE"] = str(val)
+                db.setdefault("entries", {}).setdefault(b["BRANCH"], {})["OPENING BALANCE"] = str(val)
         save_db()
         st.sidebar.success("✅ Dr Balances Synced Globally!")
     except Exception as e:
@@ -291,9 +299,11 @@ if ho_dump_file:
 
 # Build DataFrame
 data_matrix = []
+entries_dict = db.get("entries", {})
+
 for idx, b in enumerate(selected_branches, start=1):
     b_name = b["BRANCH"]
-    e = db["entries"].get(b_name, {})
+    e = entries_dict.get(b_name, {})
 
     op_bal = e.get("OPENING BALANCE", "")
     dep = e.get("DEPOSIT", "")
@@ -380,7 +390,7 @@ edited_df = st.data_editor(
 has_changes = False
 for _, row in edited_df.iterrows():
     b_name = row["BRANCH"]
-    store_entry = db["entries"].setdefault(b_name, {})
+    store_entry = db.setdefault("entries", {}).setdefault(b_name, {})
     for col in ["OPENING BALANCE", "DEPOSIT", "DENOMINATION", "AddinGS", "PENDING APPRVLS", "FINANCE AMNT", "SR", "SWEEPER SALARY", "EDITS", "APX SHORTAGE", "(KSP)'Sir's Approvals", "REMARKS"]:
         val = str(row[col]) if pd.notna(row[col]) else ""
         if store_entry.get(col, "") != val:
