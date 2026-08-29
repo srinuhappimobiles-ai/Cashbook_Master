@@ -241,7 +241,7 @@ reader = load_ocr()
 
 
 def process_cashbook_ocr(img_np, target_branch):
-  """Extracts cashbook data from image and accurately maps to the target branch."""
+  """Extracts cashbook data strictly into Denomination & Approvals without touching DEPOSIT."""
   height, width = img_np.shape[:2]
   ocr_results = reader.readtext(img_np)
 
@@ -268,7 +268,6 @@ def process_cashbook_ocr(img_np, target_branch):
     r["items"].sort(key=lambda item: item["x"])
 
   denom_val = ""
-  deposit_val = ""
   addins_val = ""
   closing_val = ""
   pending_apprvls, finance_amnt, sr_list, edits_list, ksp_approvals = (
@@ -284,7 +283,7 @@ def process_cashbook_ocr(img_np, target_branch):
     left_items = [i for i in r["items"] if i["x"] <= width * 0.68]
     right_items = [i for i in r["items"] if i["x"] > width * 0.68]
 
-    # Check right column for Denomination Total
+    # Right column: Capture Total from Denomination table
     if any("total" in i["text"].lower() for i in right_items):
       for i in reversed(right_items):
         val = extract_number(i["text"], round_val=False)
@@ -300,20 +299,21 @@ def process_cashbook_ocr(img_np, target_branch):
         if val is not None and val > 0:
           closing_val = int(round(val)) if val.is_integer() else val
           break
-    elif "deposit" in left_text:
-      for i in reversed(left_items):
-        val = extract_number(i["text"], round_val=False)
-        if val is not None and val > 0:
-          deposit_val = int(round(val)) if val.is_integer() else val
-          break
     elif "add ins" in left_text or "addins" in left_text:
       for i in reversed(left_items):
         val = extract_number(i["text"], round_val=False)
         if val is not None and val > 0:
           addins_val = int(round(val)) if val.is_integer() else val
           break
+    elif not denom_val and "deposit" in left_text:
+      # If denom wasn't detected on right, use the deposit row number for DENOMINATION only
+      for i in reversed(left_items):
+        val = extract_number(i["text"], round_val=False)
+        if val is not None and val > 0:
+          denom_val = int(round(val)) if val.is_integer() else val
+          break
 
-    # Approvals & Vouchers in the body
+    # Extract Vouchers / Approvals from body
     if not any(
         x in left_text
         for x in [
@@ -397,9 +397,7 @@ def process_cashbook_ocr(img_np, target_branch):
         elif "extra items" in left_text:
           edits_list.append(amt)
 
-  if not denom_val and deposit_val:
-    denom_val = deposit_val
-
+  # Update store data
   db["store_data"][target_branch] = {
       "DENOMINATION": denom_val,
       "PENDING APPRVLS": format_excel_formula(pending_apprvls),
@@ -409,13 +407,12 @@ def process_cashbook_ocr(img_np, target_branch):
       "(KSP)'Sir's Approvals": format_excel_formula(ksp_approvals),
   }
 
+  # Update manual edits: NOTE: DEPOSIT is intentionally left intact for manual cashier entry
   if target_branch not in db["manual_edits"]:
     db["manual_edits"][target_branch] = {}
 
   if denom_val:
     db["manual_edits"][target_branch]["DENOMINATION"] = str(denom_val)
-  if deposit_val:
-    db["manual_edits"][target_branch]["DEPOSIT"] = str(deposit_val)
   if addins_val:
     db["manual_edits"][target_branch]["AddinGS"] = str(addins_val)
   if closing_val:
@@ -469,7 +466,7 @@ with col3:
         key="snip_paste_store",
     )
     single_snip_file = st.file_uploader(
-        f"Upload / Paste Snip for [{target_branch_name}]",
+        f"Upload / Drag Snip for [{target_branch_name}]",
         type=["png", "jpg", "jpeg"],
         key=f"single_snip_{target_branch_name}",
     )
