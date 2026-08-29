@@ -233,8 +233,11 @@ def normalize_name(s):
 
 
 def parse_outlook_text(text):
-  """Extracts structured values accurately from pasted Outlook text/tables."""
+  """Extracts structured values from pasted Outlook text according to store cashbook layout."""
   extracted = {
+      "closing_bal": "",
+      "deposit": "",
+      "addins": "",
       "denom": "",
       "pending_apprvls": [],
       "finance_amnt": [],
@@ -251,37 +254,45 @@ def parse_outlook_text(text):
     if not clean_line:
       continue
 
-    # Extract all non-zero numbers
+    # Extract all numbers from line
     tokens = re.findall(r"\b\d+(?:,\d+)*(?:\.\d+)?\b", line)
     clean_nums = []
     for n in tokens:
       val = extract_number(n)
-      if val is not None and val > 0:
+      if val is not None:
         clean_nums.append(int(round(val)) if val.is_integer() else val)
 
-    if not clean_nums:
-      continue
+    # 1. Closing Balance
+    if "apx closing" in clean_line or "closing balance" in clean_line:
+      for n in clean_nums:
+        if n > 0:
+          extracted["closing_bal"] = n
+          break
 
-    target_val = clean_nums[0]
+    # 2. Cash Deposit
+    elif "deposit" in clean_line:
+      for n in clean_nums:
+        if n > 0 and n not in [500, 200, 100, 50, 20, 10, 5]:
+          extracted["deposit"] = n
+          break
 
-    # 1. Denomination / Closing Match
-    if any(
-        k in clean_line
-        for k in [
-            "closing",
-            "denomination",
-            "denom",
-            "cash balance",
-            "total cash",
-        ]
-    ):
-      extracted["denom"] = target_val
+    # 3. Add Ins
+    elif "add in" in clean_line or "add ins" in clean_line or "addins" in clean_line:
+      for n in clean_nums:
+        if n > 0:
+          extracted["addins"] = n
+          break
 
-    # 2. Approvals (KSP)
+    # 4. Denomination Total (at bottom of Denomination column)
+    elif clean_line.startswith("total") and "approval" not in clean_line:
+      non_zero = [n for n in clean_nums if n > 0]
+      if non_zero:
+        extracted["denom"] = non_zero[-1]
+
+    # 5. Approvals & Schemes
     elif any(k in clean_line for k in ["pavan", "santhosh", "sharan"]):
-      extracted["ksp_approvals"].append(target_val)
-
-    # 3. Pending Approvals
+      if clean_nums:
+        extracted["ksp_approvals"].append(clean_nums[0])
     elif any(
         k in clean_line
         for k in [
@@ -296,9 +307,8 @@ def parse_outlook_text(text):
             "trade license",
         ]
     ):
-      extracted["pending_apprvls"].append(target_val)
-
-    # 4. Finance / Cashback / DBD
+      if clean_nums:
+        extracted["pending_apprvls"].append(clean_nums[0])
     elif any(
         k in clean_line
         for k in [
@@ -312,38 +322,41 @@ def parse_outlook_text(text):
             "finance",
         ]
     ):
-      extracted["finance_amnt"].append(target_val)
-      remark = "Finance"
-      if "cashback" in clean_line or "cash back" in clean_line:
-        remark = "Cash Back"
-      elif "cash to card" in clean_line:
-        remark = "Cash to Card Modification"
-      elif "dbd" in clean_line:
-        remark = "DBD Modification"
+      if clean_nums:
+        amt = clean_nums[0]
+        extracted["finance_amnt"].append(amt)
+        remark = "Finance"
+        if "cashback" in clean_line or "cash back" in clean_line:
+          remark = "Cash Back"
+        elif "cash to card" in clean_line:
+          remark = "Cash to Card Modification"
+        elif "dbd" in clean_line:
+          remark = "DBD Modification"
 
-      bill_match = re.search(r"\b(?:inv|bill|txn)[-_/\w\d]+\b", line, re.I)
-      bill_no = bill_match.group(0) if bill_match else "N/A"
-      extracted["finance_meta"].append(
-          {"bill_no": bill_no, "amount": target_val, "remarks": remark}
-      )
-
-    # 5. Sales Return (SR)
+        bill_match = re.search(r"\b(?:inv|bill|txn)[-_/\w\d]+\b", line, re.I)
+        bill_no = bill_match.group(0) if bill_match else "N/A"
+        extracted["finance_meta"].append(
+            {"bill_no": bill_no, "amount": amt, "remarks": remark}
+        )
     elif any(
         k in clean_line
         for k in ["srn", "sr", "sale return", "sales return", "doa"]
     ):
-      extracted["sr_list"].append(target_val)
-      bill_match = re.search(r"\b(?:srn|inv|bill)[-_/\w\d]+\b", line, re.I)
-      bill_no = bill_match.group(0) if bill_match else "N/A"
-      extracted["sr_meta"].append({
-          "bill_no": bill_no,
-          "amount": target_val,
-          "reason": "Sales Return",
-      })
-
-    # 6. Edits / Extra
+      if clean_nums:
+        amt = clean_nums[0]
+        extracted["sr_list"].append(amt)
+        bill_match = re.search(r"\b(?:srn|inv|bill)[-_/\w\d]+\b", line, re.I)
+        bill_no = bill_match.group(0) if bill_match else "N/A"
+        extracted["sr_meta"].append(
+            {"bill_no": bill_no, "amount": amt, "reason": "Sales Return"}
+        )
     elif "extra" in clean_line or "edit" in clean_line:
-      extracted["edits_list"].append(target_val)
+      if clean_nums:
+        extracted["edits_list"].append(clean_nums[0])
+
+  # Fallback: If denom was not specifically found via "total", but deposit is known
+  if not extracted["denom"] and extracted["deposit"]:
+    extracted["denom"] = extracted["deposit"]
 
   return extracted
 
@@ -412,8 +425,8 @@ with col3:
     )
     pasted_box = st.text_area(
         "Paste Outlook Mail Table/Text:",
-        placeholder="Copy from Outlook -> Paste here (Ctrl+V)...",
-        height=70,
+        placeholder="Copy table/text from Outlook -> Paste here (Ctrl+V)...",
+        height=80,
         key="quick_paste_box",
     )
     if st.button(
@@ -441,6 +454,14 @@ with col3:
         if res["denom"]:
           db["manual_edits"][target_store_name]["DENOMINATION"] = str(
               res["denom"]
+          )
+        if res["deposit"]:
+          db["manual_edits"][target_store_name]["DEPOSIT"] = str(res["deposit"])
+        if res["addins"]:
+          db["manual_edits"][target_store_name]["AddinGS"] = str(res["addins"])
+        if res["closing_bal"]:
+          db["manual_edits"][target_store_name]["CLOSING BALANCE"] = str(
+              res["closing_bal"]
           )
         if res["pending_apprvls"]:
           db["manual_edits"][target_store_name]["PENDING APPRVLS"] = (
@@ -470,7 +491,7 @@ with col3:
         }
 
         save_db(db)
-        st.success(f"✅ Data mapped instantly to **{target_store_name}**!")
+        st.success(f"✅ All fields mapped instantly to **{target_store_name}**!")
         st.rerun()
       else:
         st.warning("Please paste some text/table first.")
@@ -548,7 +569,7 @@ if ho_dump_file:
     except Exception as e:
       st.error(f"Error reading HO Dump file: {e}")
 
-# Process Store Screenshots
+# Process Store Screenshots (OCR)
 if uploaded_files:
   with st.spinner("Processing screenshots and mapping data..."):
     for file in uploaded_files:
