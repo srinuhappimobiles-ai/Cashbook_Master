@@ -8,7 +8,6 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 import streamlit as st
-from streamlit_paste_button import paste_image_button
 
 # Page configuration
 st.set_page_config(page_title="Happi Cashbook Master", layout="wide")
@@ -398,11 +397,9 @@ def process_cashbook_ocr(img_np, target_branch):
         elif "extra items" in left_text:
           edits_list.append(amt)
 
-  # Fallback for denomination
   if not denom_val and deposit_val:
     denom_val = deposit_val
 
-  # 1. Update store_data
   db["store_data"][target_branch] = {
       "DENOMINATION": denom_val,
       "PENDING APPRVLS": format_excel_formula(pending_apprvls),
@@ -412,7 +409,6 @@ def process_cashbook_ocr(img_np, target_branch):
       "(KSP)'Sir's Approvals": format_excel_formula(ksp_approvals),
   }
 
-  # 2. Overwrite directly to manual_edits for instant table display
   if target_branch not in db["manual_edits"]:
     db["manual_edits"][target_branch] = {}
 
@@ -459,39 +455,31 @@ with col1:
 
 with col2:
   uploaded_files = st.file_uploader(
-      "📥 2. Store Screenshots (Batch Upload)",
+      "📥 2. Batch Upload Screenshots",
       type=["png", "jpg", "jpeg"],
       accept_multiple_files=True,
       key="store_screenshots_uploader",
   )
 
 with col3:
-  st.markdown("##### 📸 3. Direct Snip & Instant Paste")
-  t_col1, t_col2 = st.columns([1.2, 2])
-  with t_col1:
+  with st.expander("📸 3. Target Store Single Snip Ingestion", expanded=True):
     target_branch_name = st.selectbox(
-        "Select Store:",
+        "Target Store:",
         [b["BRANCH"] for b in selected_branches],
         key="snip_paste_store",
     )
-  with t_col2:
-    st.write("")
-    paste_res = paste_image_button(
-        label="📋 Paste Snip (Ctrl+V)",
-        background_color="#0E4C92",
-        hover_background_color="#1E88E5",
-        key="instant_snip_paste_btn",
+    single_snip_file = st.file_uploader(
+        f"Upload / Paste Snip for [{target_branch_name}]",
+        type=["png", "jpg", "jpeg"],
+        key=f"single_snip_{target_branch_name}",
     )
-
-  if paste_res.image_data is not None:
-    img_np = np.array(paste_res.image_data)
-    with st.spinner(f"Processing Cashbook Snip for {target_branch_name}..."):
-      process_cashbook_ocr(img_np, target_branch_name)
-      st.success(
-          f"✅ **{target_branch_name}** Cashbook processed & updated"
-          " instantly!"
-      )
-      st.rerun()
+    if single_snip_file:
+      image = Image.open(single_snip_file)
+      img_np = np.array(image)
+      with st.spinner(f"Mapping cashbook to {target_branch_name}..."):
+        process_cashbook_ocr(img_np, target_branch_name)
+        st.success(f"✅ Mapped to **{target_branch_name}** successfully!")
+        st.rerun()
 
 # Add New Store Dynamically
 with st.expander("➕ Add New Store to Master"):
