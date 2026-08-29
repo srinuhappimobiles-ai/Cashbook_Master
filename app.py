@@ -140,13 +140,18 @@ else:
     st.sidebar.info(f"Loaded All: **{len(selected_branches)}** Stores")
 
 # --- HELPER FUNCTIONS ---
-def extract_number(text_val):
-    if text_val is None:
+def extract_pure_amount(text_val):
+    """Isolates standalone currency amounts and ignores dates/invoice suffixes."""
+    if not text_val:
         return None
-    if re.search(r"\d{2}[-/]\d{2}[-/]\d{2,4}", str(text_val)):
+    s = str(text_val).strip()
+    if re.search(r"\d{2}[-/]\d{2}[-/]\d{2,4}", s):
         return None
-    clean = str(text_val).replace(",", "").strip()
-    match = re.search(r"(\d+\.?\d*)", clean)
+    # If text is an invoice part like FSI/CHNT/315, ignore
+    if "/" in s or "-" in s:
+        return None
+    clean = s.replace(",", "").strip()
+    match = re.fullmatch(r"(\d+\.?\d*)", clean)
     if match:
         try:
             num = float(match.group(1))
@@ -191,7 +196,7 @@ def process_cashbook_ocr(img_np, target_branch):
             "text": text.strip()
         })
 
-    # Find boundaries
+    # Boundaries
     y_start_approvals = 0
     y_end_approvals = height
     
@@ -208,9 +213,9 @@ def process_cashbook_ocr(img_np, target_branch):
     for b in right_boxes:
         if "total" in b["text"].lower():
             same_row_nums = [
-                extract_number(nb["text"]) 
+                extract_pure_amount(nb["text"]) 
                 for nb in right_boxes 
-                if abs(nb["y"] - b["y"]) <= 25 and extract_number(nb["text"]) is not None
+                if abs(nb["y"] - b["y"]) <= 25 and extract_pure_amount(nb["text"]) is not None
             ]
             if same_row_nums:
                 denom_val = str(same_row_nums[-1])
@@ -219,7 +224,7 @@ def process_cashbook_ocr(img_np, target_branch):
     if not denom_val:
         for b in boxes:
             if "deposit" in b["text"].lower() and b["x"] < width * 0.65:
-                val = extract_number(b["text"])
+                val = extract_pure_amount(b["text"])
                 if val is not None:
                     denom_val = str(val)
                     break
@@ -247,17 +252,15 @@ def process_cashbook_ocr(img_np, target_branch):
     ksp_approvals = []
 
     for r in v_rows:
-        # Sort items in row left to right
         r["items"].sort(key=lambda item: item["x"])
         row_text = " ".join([i["text"] for i in r["items"]]).lower()
         
-        # Check if line contains pure text without valid amount
+        # Search for standalone amount in the AMOUNT column (x >= 45% width)
         amt = None
         for i in reversed(r["items"]):
-            val = extract_number(i["text"])
-            if val is not None and val > 0 and val not in [2000, 500, 200, 100, 50, 20, 10, 5]:
-                # Check if number is not part of a date (like 2026)
-                if val not in [2024, 2025, 2026, 2027]:
+            if i["x"] >= width * 0.45:
+                val = extract_pure_amount(i["text"])
+                if val is not None and val > 0 and val not in [2000, 500, 200, 100, 50, 20, 10, 5]:
                     amt = val
                     break
                     
@@ -274,7 +277,7 @@ def process_cashbook_ocr(img_np, target_branch):
             # 4. Extra Edits
             elif "extra" in row_text or "edit" in row_text:
                 edits_list.append(amt)
-            # 5. Pending Approvals (Auditor, Suresh, Traveling, Mallesh, Admin, Expenses, etc.)
+            # 5. Pending Approvals (Auditor, Traveling, Admin, Expenses, etc.)
             else:
                 pending_apprvls.append(amt)
 
@@ -376,7 +379,7 @@ if addins_dump_file:
             addins_dict = {}
             for idx, row in df_addins.iterrows():
                 b_val = normalize_name(row[branch_col])
-                clean_amt = extract_number(row[amt_col])
+                clean_amt = extract_pure_amount(row[amt_col])
                 if b_val and clean_amt is not None and clean_amt > 0:
                     if b_val not in addins_dict:
                         addins_dict[b_val] = []
@@ -436,7 +439,7 @@ if ho_dump_file:
             for idx, row in df_dump.iterrows():
                 b_val = normalize_name(row[branch_col])
                 raw_amt = row[bal_col]
-                clean_amt = extract_number(raw_amt)
+                clean_amt = extract_pure_amount(raw_amt)
                 if b_val and clean_amt is not None:
                     dump_dict[b_val] = clean_amt
 
@@ -524,9 +527,6 @@ for idx, b in enumerate(selected_branches, start=1):
     grid_rows.append(row_data)
 
 st.subheader(f"📊 Head Office Master Cashbook ({len(selected_branches)} Stores Shown)")
-
-# Unique key based on data content to force Handsontable re-render
-data_signature = hash(json.dumps(grid_rows))
 
 hot_html = f"""
 <!DOCTYPE html>
@@ -618,7 +618,7 @@ with c_down:
             "SWEEPER SALARY": manual.get("SWEEPER SALARY", ""),
             "EDITS": manual.get("EDITS", str(d.get("EDITS", ""))),
             "APX SHORTAGE": manual.get("APX SHORTAGE", ""),
-            "(KSP)'Sir's Approvals": manual.get("(KSP)'Sir's Approvals", str(d.get("(KSP)'Sir's Approvals", ""))),
+            "(KSP)'Sir's Approvals": manual.get("(KSP)'Sir's Approvals", str(d.get("(KSP)'Sir's Approvals", "")) ),
             "CLOSING BALANCE": manual.get("CLOSING BALANCE", ""),
             "REMARKS": manual.get("REMARKS", "")
         })
