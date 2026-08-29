@@ -219,24 +219,12 @@ def extract_number(text_val, round_val=False):
 
 
 def format_excel_formula(num_list):
+  """Preserves exact Excel formula syntax like =23000+370 for multiple numbers."""
   if not num_list:
     return ""
   if len(num_list) == 1:
     return str(num_list[0])
   return "=" + "+".join([str(x) for x in num_list])
-
-
-def evaluate_display_val(val):
-  """Calculates the sum of formula numbers so total (e.g. 23370) displays cleanly on screen."""
-  if not val:
-    return ""
-  s = str(val).strip()
-  if s.startswith("="):
-    nums = re.findall(r"\d+(?:\.\d+)?", s)
-    if nums:
-      total = sum(float(x) for x in nums)
-      return int(round(total)) if total.is_integer() else round(total, 2)
-  return s
 
 
 def normalize_name(s):
@@ -254,7 +242,7 @@ reader = load_ocr()
 
 
 def process_cashbook_ocr(img_np, target_branch):
-  """Accurately extracts all approval lines and calculates multi-item formulas."""
+  """Accurately extracts all approval lines and saves them as exact Excel formulas."""
   height, width = img_np.shape[:2]
   ocr_results = reader.readtext(img_np)
 
@@ -311,7 +299,7 @@ def process_cashbook_ocr(img_np, target_branch):
           denom_val = int(round(val)) if val.is_integer() else val
           break
 
-    # Extract Vouchers / Approvals from body (Ignore headers)
+    # Extract Vouchers / Approvals from body
     if not any(
         x in left_text
         for x in [
@@ -330,7 +318,6 @@ def process_cashbook_ocr(img_np, target_branch):
         ]
     ):
       amt = None
-      # Search backwards from the end of the left items to get the amount accurately
       for i in reversed(left_items):
         if i["x"] > width * 0.40:
           val = extract_number(i["text"], round_val=False)
@@ -401,7 +388,7 @@ def process_cashbook_ocr(img_np, target_branch):
           edits_list.append(amt)
 
   db["store_data"][target_branch] = {
-      "DENOMINATION": denom_val,
+      "DENOMINATION": str(denom_val) if denom_val else "",
       "PENDING APPRVLS": format_excel_formula(pending_apprvls),
       "FINANCE AMNT": format_excel_formula(finance_amnt),
       "SR": format_excel_formula(sr_list),
@@ -615,32 +602,26 @@ for idx, b in enumerate(selected_branches, start=1):
       "Sl.No.": idx,
       "CODE": b["CODE"],
       "BRANCH": b["BRANCH"],
-      "OPENING BALANCE": evaluate_display_val(
-          manual.get("OPENING BALANCE", str(opening_bal))
+      "OPENING BALANCE": manual.get("OPENING BALANCE", str(opening_bal)),
+      "DEPOSIT": manual.get("DEPOSIT", ""),
+      "DENOMINATION": manual.get(
+          "DENOMINATION", str(d.get("DENOMINATION", ""))
       ),
-      "DEPOSIT": evaluate_display_val(manual.get("DEPOSIT", "")),
-      "DENOMINATION": evaluate_display_val(
-          manual.get("DENOMINATION", str(d.get("DENOMINATION", "")))
+      "AddinGS": manual.get("AddinGS", ""),
+      "PENDING APPRVLS": manual.get(
+          "PENDING APPRVLS", str(d.get("PENDING APPRVLS", ""))
       ),
-      "AddinGS": evaluate_display_val(manual.get("AddinGS", "")),
-      "PENDING APPRVLS": evaluate_display_val(
-          manual.get("PENDING APPRVLS", str(d.get("PENDING APPRVLS", "")))
+      "FINANCE AMNT": manual.get(
+          "FINANCE AMNT", str(d.get("FINANCE AMNT", ""))
       ),
-      "FINANCE AMNT": evaluate_display_val(
-          manual.get("FINANCE AMNT", str(d.get("FINANCE AMNT", "")))
+      "SR": manual.get("SR", str(d.get("SR", ""))),
+      "SWEEPER SALARY": manual.get("SWEEPER SALARY", ""),
+      "EDITS": manual.get("EDITS", str(d.get("EDITS", ""))),
+      "APX SHORTAGE": manual.get("APX SHORTAGE", ""),
+      "(KSP)'Sir's Approvals": manual.get(
+          "(KSP)'Sir's Approvals", str(d.get("(KSP)'Sir's Approvals", ""))
       ),
-      "SR": evaluate_display_val(manual.get("SR", str(d.get("SR", "")))),
-      "SWEEPER SALARY": evaluate_display_val(manual.get("SWEEPER SALARY", "")),
-      "EDITS": evaluate_display_val(
-          manual.get("EDITS", str(d.get("EDITS", "")))
-      ),
-      "APX SHORTAGE": evaluate_display_val(manual.get("APX SHORTAGE", "")),
-      "(KSP)'Sir's Approvals": evaluate_display_val(
-          manual.get(
-              "(KSP)'Sir's Approvals", str(d.get("(KSP)'Sir's Approvals", ""))
-          )
-      ),
-      "CLOSING BALANCE": evaluate_display_val(manual.get("CLOSING BALANCE", "")),
+      "CLOSING BALANCE": manual.get("CLOSING BALANCE", ""),
       "REMARKS": manual.get("REMARKS", ""),
   })
 
@@ -650,11 +631,32 @@ st.subheader(
     f"📋 Head Office Master Cashbook ({len(selected_branches)} Stores Shown)"
 )
 
+# Text Column Config for preserving verbatim formulas
+column_config = {
+    col: st.column_config.TextColumn(col)
+    for col in [
+        "OPENING BALANCE",
+        "DEPOSIT",
+        "DENOMINATION",
+        "AddinGS",
+        "PENDING APPRVLS",
+        "FINANCE AMNT",
+        "SR",
+        "SWEEPER SALARY",
+        "EDITS",
+        "APX SHORTAGE",
+        "(KSP)'Sir's Approvals",
+        "CLOSING BALANCE",
+        "REMARKS",
+    ]
+}
+
 edited_df = st.data_editor(
     df_master,
     use_container_width=True,
     height=550,
     disabled=["Sl.No.", "CODE", "BRANCH"],
+    column_config=column_config,
     num_rows="fixed",
     key=f"master_data_editor_{work_mode}_{len(selected_branches)}",
 )
