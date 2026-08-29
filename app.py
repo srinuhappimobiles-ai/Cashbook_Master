@@ -241,7 +241,7 @@ reader = load_ocr()
 
 
 def process_cashbook_ocr(img_np, target_branch):
-  """Extracts cashbook data strictly into Denomination & Approvals."""
+  """Extracts ONLY Denomination and Approvals. Completely ignores Closing Balance, Deposit, and Addins."""
   height, width = img_np.shape[:2]
   ocr_results = reader.readtext(img_np)
 
@@ -281,7 +281,7 @@ def process_cashbook_ocr(img_np, target_branch):
     left_items = [i for i in r["items"] if i["x"] <= width * 0.68]
     right_items = [i for i in r["items"] if i["x"] > width * 0.68]
 
-    # Right column: Capture Total from Denomination table
+    # Right column: Capture Total from Denomination table ONLY
     if any("total" in i["text"].lower() for i in right_items):
       for i in reversed(right_items):
         val = extract_number(i["text"], round_val=False)
@@ -291,7 +291,7 @@ def process_cashbook_ocr(img_np, target_branch):
 
     left_text = " ".join([i["text"] for i in left_items]).lower()
 
-    # Fallback to deposit row number if denom not detected on right
+    # Denomination fallback from left deposit text if right total missing
     if not denom_val and "deposit" in left_text:
       for i in reversed(left_items):
         val = extract_number(i["text"], round_val=False)
@@ -299,7 +299,7 @@ def process_cashbook_ocr(img_np, target_branch):
           denom_val = int(round(val)) if val.is_integer() else val
           break
 
-    # Extract Vouchers / Approvals from body
+    # Extract Vouchers / Approvals from body (Ignore headers)
     if not any(
         x in left_text
         for x in [
@@ -393,30 +393,27 @@ def process_cashbook_ocr(img_np, target_branch):
       "(KSP)'Sir's Approvals": format_excel_formula(ksp_approvals),
   }
 
-  # Update manual edits
+  # Update manual edits: EXPLICITLY RESET CLOSING BALANCE SO OLD VALUE DISAPPEARS
   if target_branch not in db["manual_edits"]:
     db["manual_edits"][target_branch] = {}
 
-  if denom_val:
-    db["manual_edits"][target_branch]["DENOMINATION"] = str(denom_val)
-  if pending_apprvls:
-    db["manual_edits"][target_branch]["PENDING APPRVLS"] = format_excel_formula(
-        pending_apprvls
-    )
-  if finance_amnt:
-    db["manual_edits"][target_branch]["FINANCE AMNT"] = format_excel_formula(
-        finance_amnt
-    )
-  if sr_list:
-    db["manual_edits"][target_branch]["SR"] = format_excel_formula(sr_list)
-  if edits_list:
-    db["manual_edits"][target_branch]["EDITS"] = format_excel_formula(
-        edits_list
-    )
-  if ksp_approvals:
-    db["manual_edits"][target_branch]["(KSP)'Sir's Approvals"] = (
-        format_excel_formula(ksp_approvals)
-    )
+  db["manual_edits"][target_branch]["DENOMINATION"] = (
+      str(denom_val) if denom_val else ""
+  )
+  db["manual_edits"][target_branch]["CLOSING BALANCE"] = (
+      ""  # FORCED EMPTY (Waiting for formula)
+  )
+  db["manual_edits"][target_branch]["PENDING APPRVLS"] = format_excel_formula(
+      pending_apprvls
+  )
+  db["manual_edits"][target_branch]["FINANCE AMNT"] = format_excel_formula(
+      finance_amnt
+  )
+  db["manual_edits"][target_branch]["SR"] = format_excel_formula(sr_list)
+  db["manual_edits"][target_branch]["EDITS"] = format_excel_formula(edits_list)
+  db["manual_edits"][target_branch]["(KSP)'Sir's Approvals"] = (
+      format_excel_formula(ksp_approvals)
+  )
 
   db["metadata"][target_branch] = {"sr": sr_meta, "finance": finance_meta}
   save_db(db)
@@ -691,7 +688,7 @@ for idx, row in edited_df.iterrows():
 save_db(db)
 
 # Export and Reset options
-c_down, c_reset = st.columns([4, 1.5])
+c_down, c_reset_dr, c_reset_all = st.columns([3, 1.2, 1.2])
 
 with c_down:
   all_rows_export = []
@@ -736,22 +733,29 @@ with c_down:
   excel_data = output.getvalue()
 
   st.download_button(
-      label="📥 Download Full Master Excel Sheet (All Stores)",
+      label="📥 Download Full Master Excel Sheet",
       data=excel_data,
       file_name="HO_MASTER_CASHBOOK_REPORT.xlsx",
       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
       use_container_width=True,
   )
 
-with c_reset:
+with c_reset_dr:
   if st.button("🗑️ Clear Dr Balances Only", use_container_width=True):
     db["ho_balances"] = {}
     for b_name in db["manual_edits"]:
       db["manual_edits"][b_name]["OPENING BALANCE"] = ""
     save_db(db)
-
     st.session_state.uploader_key += 1
     if "last_processed_file" in st.session_state:
       del st.session_state["last_processed_file"]
+    st.rerun()
 
+with c_reset_all:
+  if st.button("🧹 Reset All Store Entries", use_container_width=True):
+    db["store_data"] = {}
+    db["manual_edits"] = {}
+    db["metadata"] = {}
+    save_db(db)
+    st.success("Cleaned all store records!")
     st.rerun()
