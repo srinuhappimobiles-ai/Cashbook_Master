@@ -227,19 +227,15 @@ def format_excel_formula(num_list):
 
 
 def evaluate_display_val(val):
-  """Calculates the total if a formula is present, for clean table viewing."""
+  """Calculates the sum of formula numbers so total (e.g. 23370) displays cleanly on screen."""
   if not val:
     return ""
   s = str(val).strip()
   if s.startswith("="):
-    try:
-      expr = s[1:].replace(",", "")
-      # Only evaluate simple math expressions (+ - * /)
-      if re.match(r"^[\d\.\+\-\*\/\s]+$", expr):
-        total = eval(expr)
-        return int(round(total)) if float(total).is_integer() else round(total, 2)
-    except:
-      pass
+    nums = re.findall(r"\d+(?:\.\d+)?", s)
+    if nums:
+      total = sum(float(x) for x in nums)
+      return int(round(total)) if total.is_integer() else round(total, 2)
   return s
 
 
@@ -258,7 +254,7 @@ reader = load_ocr()
 
 
 def process_cashbook_ocr(img_np, target_branch):
-  """Extracts ONLY Denomination and Approvals cleanly."""
+  """Accurately extracts all approval lines and calculates multi-item formulas."""
   height, width = img_np.shape[:2]
   ocr_results = reader.readtext(img_np)
 
@@ -315,7 +311,7 @@ def process_cashbook_ocr(img_np, target_branch):
           denom_val = int(round(val)) if val.is_integer() else val
           break
 
-    # Extract Vouchers / Approvals from body
+    # Extract Vouchers / Approvals from body (Ignore headers)
     if not any(
         x in left_text
         for x in [
@@ -334,8 +330,9 @@ def process_cashbook_ocr(img_np, target_branch):
         ]
     ):
       amt = None
-      for i in left_items:
-        if i["x"] > width * 0.50:
+      # Search backwards from the end of the left items to get the amount accurately
+      for i in reversed(left_items):
+        if i["x"] > width * 0.40:
           val = extract_number(i["text"], round_val=False)
           if val is not None and val > 0:
             amt = int(round(val)) if val.is_integer() else val
@@ -356,6 +353,10 @@ def process_cashbook_ocr(img_np, target_branch):
                 "asm",
                 "javeed",
                 "trade license",
+                "expenses",
+                "bill",
+                "kiran",
+                "motor",
             ]
         ):
           pending_apprvls.append(amt)
