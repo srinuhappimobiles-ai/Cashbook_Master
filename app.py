@@ -219,7 +219,7 @@ def extract_number(text_val, round_val=False):
 
 
 def format_excel_formula(num_list):
-  """Preserves exact Excel formula syntax like =23000+370 for multiple numbers."""
+  """Builds a proper Excel formula =A+B if multiple numbers, else single number string."""
   if not num_list:
     return ""
   if len(num_list) == 1:
@@ -242,7 +242,7 @@ reader = load_ocr()
 
 
 def process_cashbook_ocr(img_np, target_branch):
-  """Accurately extracts all approval lines and saves them as exact Excel formulas."""
+  """Robust OCR Parser: Captures all approval line-item amounts accurately."""
   height, width = img_np.shape[:2]
   ocr_results = reader.readtext(img_np)
 
@@ -250,150 +250,68 @@ def process_cashbook_ocr(img_np, target_branch):
   for bbox, text, conf in ocr_results:
     cx = (bbox[0][0] + bbox[1][0]) / 2
     cy = (bbox[0][1] + bbox[2][1]) / 2
-    boxes.append({"x": cx, "y": cy, "text": text.strip()})
+    boxes.append({
+        "x": cx,
+        "y": cy,
+        "text": text.strip(),
+        "top": bbox[0][1],
+        "bottom": bbox[2][1],
+    })
 
-  boxes.sort(key=lambda b: b["y"])
-  rows = []
+  # Find boundaries of the Approvals Body
+  y_start_approvals = 0
+  y_end_approvals = height
+
   for b in boxes:
-    placed = False
-    for r in rows:
-      if abs(r["y"] - b["y"]) <= 18:
-        r["items"].append(b)
-        r["y"] = sum(i["y"] for i in r["items"]) / len(r["items"])
-        placed = True
-        break
-    if not placed:
-      rows.append({"y": b["y"], "items": [b]})
+    t = b["text"].lower()
+    if "approvals" in t or "sale return" in t:
+      y_start_approvals = max(y_start_approvals, b["y"])
+    elif "total approval" in t or "excess" in t or "short" in t:
+      y_end_approvals = min(y_end_approvals, b["y"])
 
-  for r in rows:
-    r["items"].sort(key=lambda item: item["x"])
-
+  # Extract Denomination Total from right table (x > 68% width)
   denom_val = ""
-  pending_apprvls, finance_amnt, sr_list, edits_list, ksp_approvals = (
-      [],
-      [],
-      [],
-      [],
-      [],
-  )
-  sr_meta, finance_meta = [], []
+  right_boxes = [b for b in boxes if b["x"] > width * 0.68]
+  for b in right_boxes:
+    if "total" in b["text"].lower():
+      # Find numbers on the same horizontal level
+      same_row_nums = [
+          extract_number(nb["text"])
+          for nb in right_boxes
+          if abs(nb["y"] - b["y"]) <= 25 and extract_number(nb["text"])
+      ]
+      if same_row_nums:
+        denom_val = same_row_nums[-1]
 
-  for r in rows:
-    left_items = [i for i in r["items"] if i["x"] <= width * 0.68]
-    right_items = [i for i in r["items"] if i["x"] > width * 0.68]
-
-    # Right column: Capture Total from Denomination table ONLY
-    if any("total" in i["text"].lower() for i in right_items):
-      for i in reversed(right_items):
-        val = extract_number(i["text"], round_val=False)
-        if val is not None and val > 0:
-          denom_val = int(round(val)) if val.is_integer() else val
+  if not denom_val:
+    for b in boxes:
+      if "deposit" in b["text"].lower() and b["x"] < width * 0.68:
+        val = extract_number(b["text"])
+        if val:
+          denom_val = val
           break
 
-    left_text = " ".join([i["text"] for i in left_items]).lower()
-
-    if not denom_val and "deposit" in left_text:
-      for i in reversed(left_items):
-        val = extract_number(i["text"], round_val=False)
-        if val is not None and val > 0:
-          denom_val = int(round(val)) if val.is_integer() else val
-          break
-
-    # Extract Vouchers / Approvals from body
-    if not any(
-        x in left_text
-        for x in [
-            "closing",
-            "deposit",
-            "diffrence",
-            "difference",
-            "total approval",
-            "excess",
-            "short",
-            "approvals & sale",
-            "add ins",
-            "addins",
-            "cash book",
-            "cash denomination",
-        ]
+  # Extract all numbers in the Approvals section (between y_start and y_end, and x between 40% and 72% width)
+  approval_amounts = []
+  for b in boxes:
+    if (
+        y_start_approvals + 10 < b["y"] < y_end_approvals - 10
+        and width * 0.40 <= b["x"] <= width * 0.72
     ):
-      amt = None
-      for i in reversed(left_items):
-        if i["x"] > width * 0.40:
-          val = extract_number(i["text"], round_val=False)
-          if val is not None and val > 0:
-            amt = int(round(val)) if val.is_integer() else val
-            break
+      val = extract_number(b["text"])
+      if val and val > 0 and val not in [2000, 500, 200, 100, 50, 20, 10, 5]:
+        approval_amounts.append(int(round(val)) if val.is_integer() else val)
 
-      if amt and amt > 0:
-        if any(k in left_text for k in ["pavan", "santhosh", "sharan"]):
-          ksp_approvals.append(amt)
-        elif any(
-            k in left_text
-            for k in [
-                "admin",
-                "mallesh",
-                "shiva",
-                "khan",
-                "naresh",
-                "coo",
-                "asm",
-                "javeed",
-                "trade license",
-                "expenses",
-                "bill",
-                "kiran",
-                "motor",
-            ]
-        ):
-          pending_apprvls.append(amt)
-        elif any(
-            k in left_text
-            for k in [
-                "bajaj",
-                "idfc",
-                "cash back",
-                "cashback",
-                "cash to card",
-                "upi",
-                "dbd",
-            ]
-        ):
-          finance_amnt.append(amt)
-          remark = (
-              "Cash Back"
-              if "cash" in left_text
-              else (
-                  "Cash to Card Modification"
-                  if "card" in left_text
-                  else "Finance"
-              )
-          )
-          bill_match = re.search(r"\b(?:inv|bill|txn)[-_/\w\d]+\b", left_text)
-          bill_no = bill_match.group(0) if bill_match else "N/A"
-          finance_meta.append(
-              {"bill_no": bill_no, "amount": amt, "remarks": remark}
-          )
-        elif any(
-            k in left_text
-            for k in ["srn", "sr", "sale return", "sales return", "doa"]
-        ):
-          sr_list.append(amt)
-          bill_match = re.search(r"\b(?:srn|inv|bill)[-_/\w\d]+\b", left_text)
-          bill_no = bill_match.group(0) if bill_match else "N/A"
-          sr_meta.append(
-              {"bill_no": bill_no, "amount": amt, "reason": "Sales Return"}
-          )
-        elif "extra items" in left_text:
-          edits_list.append(amt)
+  formula_str = format_excel_formula(approval_amounts)
 
+  # Update database
   db["store_data"][target_branch] = {
       "DENOMINATION": str(denom_val) if denom_val else "",
-      "PENDING APPRVLS": format_excel_formula(pending_apprvls),
-      "FINANCE AMNT": format_excel_formula(finance_amnt),
-      "SR": format_excel_formula(sr_list),
-      "EDITS": format_excel_formula(edits_list),
-      "(KSP)'Sir's Approvals": format_excel_formula(ksp_approvals),
+      "PENDING APPRVLS": formula_str,
+      "FINANCE AMNT": "",
+      "SR": "",
+      "EDITS": "",
+      "(KSP)'Sir's Approvals": "",
   }
 
   if target_branch not in db["manual_edits"]:
@@ -402,20 +320,9 @@ def process_cashbook_ocr(img_np, target_branch):
   db["manual_edits"][target_branch]["DENOMINATION"] = (
       str(denom_val) if denom_val else ""
   )
+  db["manual_edits"][target_branch]["PENDING APPRVLS"] = formula_str
   db["manual_edits"][target_branch]["CLOSING BALANCE"] = ""
-  db["manual_edits"][target_branch]["PENDING APPRVLS"] = format_excel_formula(
-      pending_apprvls
-  )
-  db["manual_edits"][target_branch]["FINANCE AMNT"] = format_excel_formula(
-      finance_amnt
-  )
-  db["manual_edits"][target_branch]["SR"] = format_excel_formula(sr_list)
-  db["manual_edits"][target_branch]["EDITS"] = format_excel_formula(edits_list)
-  db["manual_edits"][target_branch]["(KSP)'Sir's Approvals"] = (
-      format_excel_formula(ksp_approvals)
-  )
 
-  db["metadata"][target_branch] = {"sr": sr_meta, "finance": finance_meta}
   save_db(db)
 
 
@@ -631,7 +538,7 @@ st.subheader(
     f"📋 Head Office Master Cashbook ({len(selected_branches)} Stores Shown)"
 )
 
-# Text Column Config for preserving verbatim formulas
+# Text Column Config to keep verbatim formulas like =23000+370
 column_config = {
     col: st.column_config.TextColumn(col)
     for col in [
