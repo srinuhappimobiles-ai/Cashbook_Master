@@ -274,7 +274,7 @@ if addins_dump_file:
             for idx, row in df_addins.iterrows():
                 b_val = normalize_name(row[branch_col])
                 raw_amt = str(row[amt_col]).replace(",", "").strip()
-                match = re.search(r"(\d+\.?\d*)", raw_amt)
+                match = re.search(r"(\d+\.?d*)", raw_amt)
                 if match:
                     clean_amt = int(round(float(match.group(1))))
                     if b_val and clean_amt > 0:
@@ -384,14 +384,14 @@ if uploaded_files:
             if matched_branch:
                 process_cashbook_image(image, matched_branch)
 
-# Row 1 is Headers
+# Row 1 is Column Names
 header_row = [
     "SL.No.", "CODE", "BRANCH", "OPENING BALANCE", "DEPOSIT", "DENOMINATION", 
     "AddinGS", "PENDING APPRVLS", "FINANCE AMNT", "SR", "SWEEPER SALARY", 
     "EDITS", "APX SHORTAGE", "(KSP)'Sir's Approvals", "CLOSING BALANCE", "REMARKS"
 ]
 
-# Row 2 onwards: Store Data
+# Row 2 onwards is Data
 grid_rows = [header_row]
 for idx, b in enumerate(selected_branches, start=1):
     b_name = b["BRANCH"]
@@ -475,7 +475,7 @@ hot_html = f"""
             if (callStack.has(key)) return 0;
             callStack.add(key);
 
-            if (r === 0) return 0; // Header row
+            if (r === 0) return 0;
             if (!tableData[r] || tableData[r][c] === undefined) return 0;
 
             let val = tableData[r][c];
@@ -519,6 +519,15 @@ hot_html = f"""
             return 0;
         }}
 
+        // Shifts row references when dragging formulas downwards
+        function shiftFormulaRows(formula, rowDelta) {{
+            if (!formula || typeof formula !== 'string' || !formula.startsWith('=')) return formula;
+            return formula.replace(/([A-Z]+)(\\d+)/g, function(match, colStr, rowStr) {{
+                let newRow = parseInt(rowStr) + rowDelta;
+                return colStr + newRow;
+            }});
+        }}
+
         function excelRenderer(instance, td, row, col, prop, value, cellProperties) {{
             Handsontable.renderers.TextRenderer.apply(this, arguments);
             if (row === 0) {{
@@ -539,6 +548,7 @@ hot_html = f"""
             rowHeaders: true,
             height: 500,
             width: '100%',
+            fillHandle: true,
             cells: function(row, col) {{
                 return {{ renderer: excelRenderer }};
             }},
@@ -570,6 +580,21 @@ hot_html = f"""
             undo: true,
             selectionMode: 'multiple',
             licenseKey: 'non-commercial-and-evaluation'
+        }});
+
+        // Native Excel Autofill: Updates relative row numbers on drag
+        hot.addHook('beforeAutofillInsideData', function(cellCoords, direction, fillData) {{
+            if (direction === 'down') {{
+                for (let r = 0; r < fillData.length; r++) {{
+                    for (let c = 0; c < fillData[r].length; c++) {{
+                        let val = fillData[r][c];
+                        if (typeof val === 'string' && val.startsWith('=')) {{
+                            fillData[r][c] = shiftFormulaRows(val, r + 1);
+                        }}
+                    }}
+                }}
+            }}
+            return fillData;
         }});
 
         let currentActiveRow = -1;
