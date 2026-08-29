@@ -233,7 +233,7 @@ def normalize_name(s):
 
 
 def parse_outlook_text(text):
-  """Extracts structured values from pasted Outlook text according to store cashbook layout."""
+  """Accurately isolates denomination rows and maps approvals/SR without confusion."""
   extracted = {
       "closing_bal": "",
       "deposit": "",
@@ -254,7 +254,16 @@ def parse_outlook_text(text):
     if not clean_line:
       continue
 
-    # Extract all numbers from line
+    # Skip generic section headers so they don't get captured as line items
+    if clean_line in [
+        "approvals & sale returns",
+        "approvals & sale returns bill no's amount",
+        "date approvals & sale returns bill no's amount",
+        "cash denomination",
+    ]:
+      continue
+
+    # Extract all numbers from the line
     tokens = re.findall(r"\b\d+(?:,\d+)*(?:\.\d+)?\b", line)
     clean_nums = []
     for n in tokens:
@@ -269,30 +278,41 @@ def parse_outlook_text(text):
           extracted["closing_bal"] = n
           break
 
-    # 2. Cash Deposit
+    # 2. Deposit Amount
     elif "deposit" in clean_line:
       for n in clean_nums:
-        if n > 0 and n not in [500, 200, 100, 50, 20, 10, 5]:
+        if n > 0 and n not in [2000, 500, 200, 100, 50, 20, 10, 5]:
           extracted["deposit"] = n
           break
 
     # 3. Add Ins
-    elif "add in" in clean_line or "add ins" in clean_line or "addins" in clean_line:
+    elif (
+        "add in" in clean_line
+        or "add ins" in clean_line
+        or "addins" in clean_line
+    ):
       for n in clean_nums:
         if n > 0:
           extracted["addins"] = n
           break
 
-    # 4. Denomination Total (at bottom of Denomination column)
+    # 4. Denomination Total
     elif clean_line.startswith("total") and "approval" not in clean_line:
       non_zero = [n for n in clean_nums if n > 0]
       if non_zero:
         extracted["denom"] = non_zero[-1]
 
-    # 5. Approvals & Schemes
+    # 5. Check if the line is purely denomination rows (e.g. "100 100 10000", "500 44 22000")
+    # If first number is a standard Indian currency note, skip treating as approval/SR
+    elif clean_nums and clean_nums[0] in [2000, 500, 200, 100, 50, 20, 10, 5]:
+      continue
+
+    # 6. Approvals (KSP)
     elif any(k in clean_line for k in ["pavan", "santhosh", "sharan"]):
       if clean_nums:
-        extracted["ksp_approvals"].append(clean_nums[0])
+        extracted["ksp_approvals"].append(clean_nums[-1])
+
+    # 7. Approvals (Admin/Others)
     elif any(
         k in clean_line
         for k in [
@@ -308,7 +328,9 @@ def parse_outlook_text(text):
         ]
     ):
       if clean_nums:
-        extracted["pending_apprvls"].append(clean_nums[0])
+        extracted["pending_apprvls"].append(clean_nums[-1])
+
+    # 8. Finance / Cashback / DBD
     elif any(
         k in clean_line
         for k in [
@@ -323,7 +345,7 @@ def parse_outlook_text(text):
         ]
     ):
       if clean_nums:
-        amt = clean_nums[0]
+        amt = clean_nums[-1]
         extracted["finance_amnt"].append(amt)
         remark = "Finance"
         if "cashback" in clean_line or "cash back" in clean_line:
@@ -338,23 +360,27 @@ def parse_outlook_text(text):
         extracted["finance_meta"].append(
             {"bill_no": bill_no, "amount": amt, "remarks": remark}
         )
+
+    # 9. Sales Return (SR) - Only if line actually contains SR / SRN / Sale Return
     elif any(
         k in clean_line
-        for k in ["srn", "sr", "sale return", "sales return", "doa"]
+        for k in ["srn", "sr ", " sr", "sale return", "sales return", "doa"]
     ):
       if clean_nums:
-        amt = clean_nums[0]
+        amt = clean_nums[-1]
         extracted["sr_list"].append(amt)
         bill_match = re.search(r"\b(?:srn|inv|bill)[-_/\w\d]+\b", line, re.I)
         bill_no = bill_match.group(0) if bill_match else "N/A"
         extracted["sr_meta"].append(
             {"bill_no": bill_no, "amount": amt, "reason": "Sales Return"}
         )
+
+    # 10. Edits / Extra
     elif "extra" in clean_line or "edit" in clean_line:
       if clean_nums:
-        extracted["edits_list"].append(clean_nums[0])
+        extracted["edits_list"].append(clean_nums[-1])
 
-  # Fallback: If denom was not specifically found via "total", but deposit is known
+  # Fallback if denom wasn't found separately
   if not extracted["denom"] and extracted["deposit"]:
     extracted["denom"] = extracted["deposit"]
 
@@ -447,42 +473,37 @@ with col3:
             ),
         }
 
-        # 2. Overwrite directly to manual_edits for immediate table reflection
+        # 2. Reset and overwrite manual_edits for clean mapping
         if target_store_name not in db["manual_edits"]:
           db["manual_edits"][target_store_name] = {}
 
-        if res["denom"]:
-          db["manual_edits"][target_store_name]["DENOMINATION"] = str(
-              res["denom"]
-          )
-        if res["deposit"]:
-          db["manual_edits"][target_store_name]["DEPOSIT"] = str(res["deposit"])
-        if res["addins"]:
-          db["manual_edits"][target_store_name]["AddinGS"] = str(res["addins"])
-        if res["closing_bal"]:
-          db["manual_edits"][target_store_name]["CLOSING BALANCE"] = str(
-              res["closing_bal"]
-          )
-        if res["pending_apprvls"]:
-          db["manual_edits"][target_store_name]["PENDING APPRVLS"] = (
-              format_excel_formula(res["pending_apprvls"])
-          )
-        if res["finance_amnt"]:
-          db["manual_edits"][target_store_name]["FINANCE AMNT"] = (
-              format_excel_formula(res["finance_amnt"])
-          )
-        if res["sr_list"]:
-          db["manual_edits"][target_store_name]["SR"] = format_excel_formula(
-              res["sr_list"]
-          )
-        if res["edits_list"]:
-          db["manual_edits"][target_store_name]["EDITS"] = (
-              format_excel_formula(res["edits_list"])
-          )
-        if res["ksp_approvals"]:
-          db["manual_edits"][target_store_name]["(KSP)'Sir's Approvals"] = (
-              format_excel_formula(res["ksp_approvals"])
-          )
+        db["manual_edits"][target_store_name]["DENOMINATION"] = (
+            str(res["denom"]) if res["denom"] else ""
+        )
+        db["manual_edits"][target_store_name]["DEPOSIT"] = (
+            str(res["deposit"]) if res["deposit"] else ""
+        )
+        db["manual_edits"][target_store_name]["AddinGS"] = (
+            str(res["addins"]) if res["addins"] else ""
+        )
+        db["manual_edits"][target_store_name]["CLOSING BALANCE"] = (
+            str(res["closing_bal"]) if res["closing_bal"] else ""
+        )
+        db["manual_edits"][target_store_name]["PENDING APPRVLS"] = (
+            format_excel_formula(res["pending_apprvls"])
+        )
+        db["manual_edits"][target_store_name]["FINANCE AMNT"] = (
+            format_excel_formula(res["finance_amnt"])
+        )
+        db["manual_edits"][target_store_name]["SR"] = format_excel_formula(
+            res["sr_list"]
+        )
+        db["manual_edits"][target_store_name]["EDITS"] = format_excel_formula(
+            res["edits_list"]
+        )
+        db["manual_edits"][target_store_name]["(KSP)'Sir's Approvals"] = (
+            format_excel_formula(res["ksp_approvals"])
+        )
 
         # 3. Store metadata for hover preview
         db["metadata"][target_store_name] = {
@@ -491,7 +512,7 @@ with col3:
         }
 
         save_db(db)
-        st.success(f"✅ All fields mapped instantly to **{target_store_name}**!")
+        st.success(f"✅ Cleanly mapped to **{target_store_name}**!")
         st.rerun()
       else:
         st.warning("Please paste some text/table first.")
