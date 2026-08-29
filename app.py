@@ -140,26 +140,6 @@ else:
     st.sidebar.info(f"Loaded All: **{len(selected_branches)}** Stores")
 
 # --- HELPER FUNCTIONS ---
-def extract_pure_amount(text_val):
-    """Isolates standalone currency amounts and ignores dates/invoice suffixes."""
-    if not text_val:
-        return None
-    s = str(text_val).strip()
-    if re.search(r"\d{2}[-/]\d{2}[-/]\d{2,4}", s):
-        return None
-    # If text is an invoice part like FSI/CHNT/315, ignore
-    if "/" in s or "-" in s:
-        return None
-    clean = s.replace(",", "").strip()
-    match = re.fullmatch(r"(\d+\.?\d*)", clean)
-    if match:
-        try:
-            num = float(match.group(1))
-            return int(round(num))
-        except:
-            return None
-    return None
-
 def format_excel_formula(num_list):
     if not num_list:
         return ""
@@ -182,7 +162,7 @@ def load_ocr():
 reader = load_ocr()
 
 def process_cashbook_ocr(img_np, target_branch):
-    """Accurately extracts and categorizes Finance, SR, Pending Approvals and KSP Approvals."""
+    """Accurately parses all voucher amounts and separates Finance, SR, Pending Approvals."""
     height, width = img_np.shape[:2]
     ocr_results = reader.readtext(img_np)
     
@@ -196,43 +176,44 @@ def process_cashbook_ocr(img_np, target_branch):
             "text": text.strip()
         })
 
-    # Boundaries
+    # Find Vertical Boundary for Approvals Body
     y_start_approvals = 0
     y_end_approvals = height
     
     for b in boxes:
         t = b["text"].lower()
         if "add ins" in t or "addins" in t or "add in" in t:
-            y_start_approvals = max(y_start_approvals, b["y"] + 10)
-        elif "total approval" in t or "excess" in t or "short" in t:
+            y_start_approvals = max(y_start_approvals, b["y"] + 8)
+        elif "total approval" in t:
             y_end_approvals = min(y_end_approvals, b["y"] - 5)
 
-    # 1. Denomination Total
+    # 1. Denomination Total from right table (x > 65% width)
     denom_val = ""
     right_boxes = [b for b in boxes if b["x"] > width * 0.65]
     for b in right_boxes:
         if "total" in b["text"].lower():
-            same_row_nums = [
-                extract_pure_amount(nb["text"]) 
+            nums = [
+                int(float(n.replace(",", ""))) 
                 for nb in right_boxes 
-                if abs(nb["y"] - b["y"]) <= 25 and extract_pure_amount(nb["text"]) is not None
+                if abs(nb["y"] - b["y"]) <= 25 
+                for n in re.findall(r"\b\d+(?:,\d+)*(?:\.\d+)?\b", nb["text"])
             ]
-            if same_row_nums:
-                denom_val = str(same_row_nums[-1])
+            if nums:
+                denom_val = str(nums[-1])
                 break
                 
     if not denom_val:
         for b in boxes:
             if "deposit" in b["text"].lower() and b["x"] < width * 0.65:
-                val = extract_pure_amount(b["text"])
-                if val is not None:
-                    denom_val = str(val)
+                nums = [int(float(n.replace(",", ""))) for n in re.findall(r"\b\d+(?:,\d+)*(?:\.\d+)?\b", b["text"])]
+                if nums:
+                    denom_val = str(nums[-1])
                     break
 
-    # 2. Extract and Categorize Row-by-Row in Left Table
-    voucher_boxes = [b for b in boxes if y_start_approvals < b["y"] < y_end_approvals and b["x"] <= width * 0.72]
-    
+    # 2. Group Left Table items into horizontal lines
+    voucher_boxes = [b for b in boxes if y_start_approvals < b["y"] < y_end_approvals and b["x"] <= width * 0.70]
     voucher_boxes.sort(key=lambda b: b["y"])
+    
     v_rows = []
     for b in voucher_boxes:
         placed = False
@@ -253,33 +234,37 @@ def process_cashbook_ocr(img_np, target_branch):
 
     for r in v_rows:
         r["items"].sort(key=lambda item: item["x"])
-        row_text = " ".join([i["text"] for i in r["items"]]).lower()
+        full_line = " ".join([i["text"] for i in r["items"]])
+        full_line_lower = full_line.lower()
         
-        # Search for standalone amount in the AMOUNT column (x >= 45% width)
-        amt = None
-        for i in reversed(r["items"]):
-            if i["x"] >= width * 0.45:
-                val = extract_pure_amount(i["text"])
-                if val is not None and val > 0 and val not in [2000, 500, 200, 100, 50, 20, 10, 5]:
-                    amt = val
-                    break
-                    
-        if amt and amt > 0:
-            # 1. Finance / Cashback / DBD
-            if any(k in row_text for k in ["bajaj", "idfc", "cash back", "cashback", "cash to card", "upi", "dbd", "finance"]):
-                finance_amnt.append(amt)
-            # 2. Sales Return (SR)
-            elif any(k in row_text for k in ["sales return", "sale return", "srn", "sr/", "doa", "sr "]):
-                sr_list.append(amt)
-            # 3. KSP Approvals
-            elif any(k in row_text for k in ["pavan", "santhosh", "sharan"]):
-                ksp_approvals.append(amt)
-            # 4. Extra Edits
-            elif "extra" in row_text or "edit" in row_text:
-                edits_list.append(amt)
-            # 5. Pending Approvals (Auditor, Traveling, Admin, Expenses, etc.)
+        # Clean out dates & invoice codes so only real numbers remain
+        cleaned_for_nums = re.sub(r"\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b", " ", full_line)
+        cleaned_for_nums = re.sub(r"\b[A-Za-z0-9]+/[A-Za-z0-9]+/\d+\b", " ", cleaned_for_nums)
+        cleaned_for_nums = re.sub(r"\b[A-Za-z0-9]+/\d+\b", " ", cleaned_for_nums)
+        
+        nums_found = re.findall(r"\b\d+(?:,\d+)*(?:\.\d+)?\b", cleaned_for_nums)
+        clean_nums = []
+        for n in nums_found:
+            val = float(n.replace(",", ""))
+            if val > 0 and val not in [2000, 500, 200, 100, 50, 20, 10, 5]:
+                clean_nums.append(int(round(val)))
+            elif val > 0 and (val >= 1000 or (val in [500, 200, 100, 50, 20, 10] and len(clean_nums) == 0)):
+                clean_nums.append(int(round(val)))
+                
+        if clean_nums:
+            target_amount = clean_nums[-1]
+            
+            # Categorize based on text keywords
+            if any(k in full_line_lower for k in ["bajaj", "idfc", "cash back", "cashback", "cash to card", "upi", "dbd", "finance"]):
+                finance_amnt.append(target_amount)
+            elif any(k in full_line_lower for k in ["sales return", "sale return", "srn", "sr/", "doa", "return", "sr "]):
+                sr_list.append(target_amount)
+            elif any(k in full_line_lower for k in ["pavan", "santhosh", "sharan"]):
+                ksp_approvals.append(target_amount)
+            elif "extra" in full_line_lower or "edit" in full_line_lower:
+                edits_list.append(target_amount)
             else:
-                pending_apprvls.append(amt)
+                pending_apprvls.append(target_amount)
 
     f_denom = str(denom_val) if denom_val else ""
     f_pending = format_excel_formula(pending_apprvls)
@@ -288,7 +273,7 @@ def process_cashbook_ocr(img_np, target_branch):
     f_edits = format_excel_formula(edits_list)
     f_ksp = format_excel_formula(ksp_approvals)
 
-    # Overwrite database
+    # Overwrite in database
     db["store_data"][target_branch] = {
         "DENOMINATION": f_denom,
         "PENDING APPRVLS": f_pending,
@@ -379,11 +364,14 @@ if addins_dump_file:
             addins_dict = {}
             for idx, row in df_addins.iterrows():
                 b_val = normalize_name(row[branch_col])
-                clean_amt = extract_pure_amount(row[amt_col])
-                if b_val and clean_amt is not None and clean_amt > 0:
-                    if b_val not in addins_dict:
-                        addins_dict[b_val] = []
-                    addins_dict[b_val].append(clean_amt)
+                raw_amt = str(row[amt_col]).replace(",", "").strip()
+                match = re.search(r"(\d+\.?\d*)", raw_amt)
+                if match:
+                    clean_amt = int(round(float(match.group(1))))
+                    if b_val and clean_amt > 0:
+                        if b_val not in addins_dict:
+                            addins_dict[b_val] = []
+                        addins_dict[b_val].append(clean_amt)
 
             mapped_count = 0
             for b in db["branches"]:
@@ -438,10 +426,12 @@ if ho_dump_file:
             dump_dict = {}
             for idx, row in df_dump.iterrows():
                 b_val = normalize_name(row[branch_col])
-                raw_amt = row[bal_col]
-                clean_amt = extract_pure_amount(raw_amt)
-                if b_val and clean_amt is not None:
-                    dump_dict[b_val] = clean_amt
+                raw_amt = str(row[bal_col]).replace(",", "").strip()
+                match = re.search(r"(\d+\.?\d*)", raw_amt)
+                if match:
+                    clean_amt = int(round(float(match.group(1))))
+                    if b_val and clean_amt is not None:
+                        dump_dict[b_val] = clean_amt
 
             for b in db["branches"]:
                 b_norm = normalize_name(b["BRANCH"])
