@@ -395,7 +395,20 @@ if uploaded_files:
             if matched_branch:
                 process_cashbook_image(image, matched_branch)
 
-# --- BUILD EXCEL NATIVE SPREADSHEET GRID ---
+# --- CONVERT VALUES TO CLEAN NUMBERS OR FORMULAS ---
+def prepare_cell_value(val):
+    if not val:
+        return None
+    s = str(val).strip()
+    if s.startswith("="):
+        return s
+    try:
+        clean = s.replace(",", "")
+        num = float(clean)
+        return int(round(num)) if num.is_integer() else num
+    except:
+        return s
+
 headers = [
     "Sl.No.", "CODE", "BRANCH", "OPENING BALANCE", "DEPOSIT", "DENOMINATION", 
     "AddinGS", "PENDING APPRVLS", "FINANCE AMNT", "SR", "SWEEPER SALARY", 
@@ -414,25 +427,25 @@ for idx, b in enumerate(selected_branches, start=1):
         idx,
         b["CODE"],
         b["BRANCH"],
-        manual.get("OPENING BALANCE", str(opening_bal)),
-        manual.get("DEPOSIT", ""),
-        manual.get("DENOMINATION", str(d.get("DENOMINATION", ""))),
-        manual.get("AddinGS", str(addins_val)),
-        manual.get("PENDING APPRVLS", str(d.get("PENDING APPRVLS", ""))),
-        manual.get("FINANCE AMNT", str(d.get("FINANCE AMNT", ""))),
-        manual.get("SR", str(d.get("SR", ""))),
-        manual.get("SWEEPER SALARY", ""),
-        manual.get("EDITS", str(d.get("EDITS", ""))),
-        manual.get("APX SHORTAGE", ""),
-        manual.get("(KSP)'Sir's Approvals", str(d.get("(KSP)'Sir's Approvals", ""))),
-        manual.get("CLOSING BALANCE", ""),
+        prepare_cell_value(manual.get("OPENING BALANCE", str(opening_bal))),
+        prepare_cell_value(manual.get("DEPOSIT", "")),
+        prepare_cell_value(manual.get("DENOMINATION", str(d.get("DENOMINATION", "")))),
+        prepare_cell_value(manual.get("AddinGS", str(addins_val))),
+        prepare_cell_value(manual.get("PENDING APPRVLS", str(d.get("PENDING APPRVLS", "")))),
+        prepare_cell_value(manual.get("FINANCE AMNT", str(d.get("FINANCE AMNT", "")))),
+        prepare_cell_value(manual.get("SR", str(d.get("SR", "")))),
+        prepare_cell_value(manual.get("SWEEPER SALARY", "")),
+        prepare_cell_value(manual.get("EDITS", str(d.get("EDITS", "")))),
+        prepare_cell_value(manual.get("APX SHORTAGE", "")),
+        prepare_cell_value(manual.get("(KSP)'Sir's Approvals", str(d.get("(KSP)'Sir's Approvals", "")))),
+        prepare_cell_value(manual.get("CLOSING BALANCE", "")),
         manual.get("REMARKS", "")
     ]
     grid_rows.append(row_data)
 
 st.subheader(f"📊 Head Office Master Cashbook ({len(selected_branches)} Stores Shown)")
 
-# Native Excel Spreadsheet Component with Full Formulas & Shortcuts
+# Complete Excel-Engine with Range Selection & Calculation
 hot_html = f"""
 <!DOCTYPE html>
 <html>
@@ -441,7 +454,7 @@ hot_html = f"""
     <script src="https://cdn.jsdelivr.net/npm/handsontable/dist/handsontable.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/hyperformula/dist/hyperformula.full.min.js"></script>
     <style>
-        body {{ margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }}
+        body {{ margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }}
         #excelGrid {{ width: 100%; height: 530px; overflow: hidden; font-size: 13px; }}
         .handsontable th {{ background-color: #0E4C92 !important; color: white !important; font-weight: bold; height: 28px; text-align: center; }}
         .handsontable td {{ font-size: 12px; }}
@@ -456,7 +469,19 @@ hot_html = f"""
 
         const hyperformulaInstance = HyperFormula.buildEmpty({{
             licenseKey: 'internal-use-in-handsontable',
+            useArrayArithmetic: true,
+            smartEmptyCells: true,
+            ignoreWhitespace: true,
         }});
+
+        function colIndexToLetter(colIndex) {{
+            let letter = '';
+            while (colIndex >= 0) {{
+                letter = String.fromCharCode((colIndex % 26) + 65) + letter;
+                colIndex = Math.floor(colIndex / 26) - 1;
+            }}
+            return letter;
+        }}
 
         const hot = new Handsontable(container, {{
             data: data,
@@ -471,18 +496,18 @@ hot_html = f"""
                 {{ readOnly: true, className: 'htCenter' }},
                 {{ readOnly: true, className: 'htCenter' }},
                 {{ readOnly: true }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
-                {{ type: 'text' }},
+                {{ type: 'numeric', numericFormat: {{ pattern: '0,0' }} }},
+                {{ type: 'numeric', numericFormat: {{ pattern: '0,0' }} }},
+                {{ type: 'numeric', numericFormat: {{ pattern: '0,0' }} }},
+                {{ type: 'numeric', numericFormat: {{ pattern: '0,0' }} }},
+                {{ type: 'numeric', numericFormat: {{ pattern: '0,0' }} }},
+                {{ type: 'numeric', numericFormat: {{ pattern: '0,0' }} }},
+                {{ type: 'numeric', numericFormat: {{ pattern: '0,0' }} }},
+                {{ type: 'numeric', numericFormat: {{ pattern: '0,0' }} }},
+                {{ type: 'numeric', numericFormat: {{ pattern: '0,0' }} }},
+                {{ type: 'numeric', numericFormat: {{ pattern: '0,0' }} }},
+                {{ type: 'numeric', numericFormat: {{ pattern: '0,0' }} }},
+                {{ type: 'numeric', numericFormat: {{ pattern: '0,0' }} }},
                 {{ type: 'text' }}
             ],
             stretchH: 'all',
@@ -493,7 +518,23 @@ hot_html = f"""
             autoWrapCol: true,
             copyPaste: true,
             undo: true,
+            outsideClickDeselects: false,
+            selectionMode: 'multiple',
             licenseKey: 'non-commercial-and-evaluation'
+        }});
+
+        // Excel-like mouse drag range insertion while formula editing
+        hot.addHook('afterOnCellMouseDown', function(event, coords) {{
+            const editor = hot.getActiveEditor();
+            if (editor && editor.isOpened() && editor.TEXTAREA) {{
+                let val = editor.TEXTAREA.value;
+                if (val && val.startsWith('=')) {{
+                    const cellLetter = colIndexToLetter(coords.col) + (coords.row + 1);
+                    if (val.endsWith('(') || val.endsWith(',') || val.endsWith('+') || val.endsWith('-') || val.endsWith('*') || val.endsWith('/')) {{
+                        editor.TEXTAREA.value = val + cellLetter;
+                    }}
+                }}
+            }}
         }});
     </script>
 </body>
