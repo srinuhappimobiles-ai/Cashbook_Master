@@ -5,8 +5,6 @@ import os
 import re
 import numpy as np
 import pandas as pd
-from PIL import Image
-import pytesseract
 import streamlit as st
 
 st.set_page_config(page_title="Happi Cashbook Master", layout="wide", initial_sidebar_state="expanded")
@@ -14,7 +12,7 @@ st.set_page_config(page_title="Happi Cashbook Master", layout="wide", initial_si
 st.markdown("""
     <style>
     .block-container { 
-        padding-top: 1rem !important; 
+        padding-top: 0.8rem !important; 
         padding-bottom: 0rem !important; 
         padding-left: 1rem !important; 
         padding-right: 1rem !important; 
@@ -147,61 +145,7 @@ def evaluate_val(val):
     except:
         return 0
 
-def process_cashbook_image(pil_img, target_branch):
-    text_data = pytesseract.image_to_string(pil_img)
-    lines = [l.strip() for l in text_data.split("\n") if l.strip()]
-
-    denom_val = ""
-    pending_apprvls = []
-    finance_amnt = []
-    sr_list = []
-    edits_list = []
-    ksp_approvals = []
-
-    for line in lines:
-        line_lower = line.lower()
-        if any(h in line_lower for h in ["apx closing", "closing balance", "add ins", "addins", "total approval", "difference", "diffrence", "excess", "short", "corporate", "date", "bill no"]):
-            continue
-
-        cleaned = re.sub(r"\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b", " ", line)
-        cleaned = re.sub(r"\b[A-Za-z0-9]+/[A-Za-z0-9]+/\d+\b", " ", cleaned)
-        cleaned = re.sub(r"\b[A-Za-z0-9]+/\d+\b", " ", cleaned)
-
-        nums = re.findall(r"\b\d+(?:,\d+)*(?:\.\d+)?\b", cleaned)
-        valid_nums = []
-        for n in nums:
-            val = float(n.replace(",", ""))
-            if val > 0 and val not in [2024, 2025, 2026, 2027]:
-                valid_nums.append(int(round(val)))
-
-        if valid_nums:
-            amount = valid_nums[-1]
-            if any(k in line_lower for k in ["bajaj", "idfc", "cash back", "cashback", "cash to card", "upi", "dbd", "finance"]):
-                finance_amnt.append(amount)
-            elif any(k in line_lower for k in ["sales return", "sale return", "srn", "sr/", "doa", "return", "sr "]):
-                sr_list.append(amount)
-            elif any(k in line_lower for k in ["pavan", "santhosh", "sharan"]):
-                ksp_approvals.append(amount)
-            elif "extra" in line_lower or "edit" in line_lower:
-                edits_list.append(amount)
-            else:
-                pending_apprvls.append(amount)
-
-        if "total" in line_lower and "approval" not in line_lower:
-            tot_nums = re.findall(r"\b\d+(?:,\d+)*(?:\.\d+)?\b", line)
-            if tot_nums:
-                denom_val = str(int(float(tot_nums[-1].replace(",", ""))))
-
-    store_entry = db.setdefault("entries", {}).setdefault(target_branch, {})
-    if denom_val: store_entry["DENOMINATION"] = denom_val
-    if pending_apprvls: store_entry["PENDING APPRVLS"] = format_excel_formula(pending_apprvls)
-    if finance_amnt: store_entry["FINANCE AMNT"] = format_excel_formula(finance_amnt)
-    if sr_list: store_entry["SR"] = format_excel_formula(sr_list)
-    if edits_list: store_entry["EDITS"] = format_excel_formula(edits_list)
-    if ksp_approvals: store_entry["(KSP)'Sir's Approvals"] = format_excel_formula(ksp_approvals)
-    save_db()
-
-# --- SIDEBAR (Auto-Expanded & Always Available) ---
+# --- SIDEBAR CONTROL PANEL ---
 with st.sidebar:
     st.markdown("### 🏢 Happi Control Hub")
     
@@ -222,20 +166,12 @@ with st.sidebar:
         selected_branches = c1_branches if "Cashier 1" in cashier_view else c2_branches
 
     st.markdown("---")
-    with st.expander("📸 1. Single Store Snip (OCR)", expanded=True):
-        target_branch_name = st.selectbox("Target Store:", [b["BRANCH"] for b in selected_branches], key="snip_paste_store")
-        single_snip_file = st.file_uploader("Upload Cashbook Snip", type=["png", "jpg", "jpeg"], key=f"single_snip_{target_branch_name}")
-        if single_snip_file:
-            image = Image.open(single_snip_file)
-            with st.spinner(f"Mapping {target_branch_name}..."):
-                process_cashbook_image(image, target_branch_name)
-                st.success(f"✅ Mapped & Synced {target_branch_name}!")
-                st.rerun()
+    st.markdown("#### 📥 File Ingestion")
 
-    with st.expander("📂 2. Apex Dr Balance File", expanded=False):
+    with st.expander("📂 1. Apex Dr Balance File", expanded=True):
         ho_dump_file = st.file_uploader("Upload Apex File", type=["xlsx", "xls", "csv"], key="ho_dump")
 
-    with st.expander("📥 3. Addins Dump File", expanded=False):
+    with st.expander("📥 2. Addins Dump File", expanded=True):
         addins_dump_file = st.file_uploader("Upload Addins File", type=["xlsx", "xls", "csv"], key="addins_dump")
 
     st.markdown("---")
@@ -377,7 +313,7 @@ column_config["CLOSING BALANCE"] = st.column_config.TextColumn("CLOSING BALANCE"
 edited_df = st.data_editor(
     df_active,
     use_container_width=True,
-    height=780,
+    height=800,
     disabled=["Sl.No.", "CODE", "BRANCH", "CLOSING BALANCE"],
     column_config=column_config,
     num_rows="fixed",
