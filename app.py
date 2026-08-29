@@ -38,6 +38,8 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+DB_FILE = "cashbook_master_db.json"
+
 DEFAULT_BRANCHES = [
     {"CODE": "ADBD", "BRANCH": "ADILABAD"}, {"CODE": "AMP", "BRANCH": "AMALAPURAM"},
     {"CODE": "AMPT", "BRANCH": "AMEERPET"}, {"CODE": "ANTP", "BRANCH": "ANANTAPUR"},
@@ -95,23 +97,73 @@ DEFAULT_BRANCHES = [
     {"CODE": "ZB", "BRANCH": "ZAHEERABAD"}
 ]
 
-if "new_updates" not in st.session_state:
-    st.session_state.new_updates = {}
+# Universal Global Shared Cache
+@st.cache_resource
+def get_global_store():
+    return {
+        "store_cells": {}
+    }
+
+global_store = get_global_store()
+
+# Load DB helper
+def load_db():
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, "r") as f:
+                return json.load(f)
+        except:
+            pass
+    return {
+        "branches": sorted(DEFAULT_BRANCHES, key=lambda x: x["BRANCH"].upper()),
+        "store_cells": {}
+    }
+
+def save_db(cells_data):
+    db_to_save = {
+        "branches": sorted(DEFAULT_BRANCHES, key=lambda x: x["BRANCH"].upper()),
+        "store_cells": cells_data
+    }
+    with open(DB_FILE, "w") as f:
+        json.dump(db_to_save, f, indent=2)
+
+if not global_store["store_cells"]:
+    disk_db = load_db()
+    global_store["store_cells"] = disk_db.get("store_cells", {})
+
+all_branches = sorted(DEFAULT_BRANCHES, key=lambda x: x["BRANCH"].upper())
+
+headers = [
+    "SL.No.", "CODE", "BRANCH", "OPENING BALANCE", "DEPOSIT", "DENOMINATION", 
+    "AddinGS", "PENDING APPRVLS", "FINANCE AMNT", "SR", "SWEEPER SALARY", 
+    "EDITS", "APX SHORTAGE", "(KSP)'Sir's Approvals", "CLOSING BALANCE", "REMARKS"
+]
+
+header_map = {name: idx for idx, name in enumerate(headers)}
+branch_row_map = {b["BRANCH"]: idx + 1 for idx, b in enumerate(all_branches)}
 
 def format_excel_formula(num_list):
-    if not num_list:
-        return ""
+    if not num_list: return ""
     clean_ints = [str(int(x)) for x in num_list if x > 0]
-    if not clean_ints:
-        return ""
-    if len(clean_ints) == 1:
-        return clean_ints[0]
+    if not clean_ints: return ""
+    if len(clean_ints) == 1: return clean_ints[0]
     return "=" + "+".join(clean_ints)
 
 def normalize_name(s):
-    if not s:
-        return ""
+    if not s: return ""
     return re.sub(r"[^A-Za-z0-9]", "", str(s)).upper()
+
+def set_cell_value(r, c, val):
+    key = f"{r}_{c}"
+    if str(val).startswith("="):
+        global_store["store_cells"][key] = {"f": str(val)}
+    else:
+        try:
+            num = float(str(val).replace(",", ""))
+            global_store["store_cells"][key] = {"v": int(round(num)) if num.is_integer() else num, "ct": {"fa": "General", "t": "n"}}
+        except:
+            global_store["store_cells"][key] = {"v": str(val), "ct": {"fa": "General", "t": "g"}}
+    save_db(global_store["store_cells"])
 
 def process_cashbook_image(pil_img, target_branch):
     text_data = pytesseract.image_to_string(pil_img)
@@ -158,16 +210,16 @@ def process_cashbook_image(pil_img, target_branch):
             if tot_nums:
                 denom_val = str(int(float(tot_nums[-1].replace(",", ""))))
 
-    st.session_state.new_updates[target_branch] = {
-        "DENOMINATION": denom_val,
-        "PENDING APPRVLS": format_excel_formula(pending_apprvls),
-        "FINANCE AMNT": format_excel_formula(finance_amnt),
-        "SR": format_excel_formula(sr_list),
-        "EDITS": format_excel_formula(edits_list),
-        "(KSP)'Sir's Approvals": format_excel_formula(ksp_approvals)
-    }
+    r = branch_row_map.get(target_branch)
+    if r:
+        if denom_val: set_cell_value(r, header_map["DENOMINATION"], denom_val)
+        if pending_apprvls: set_cell_value(r, header_map["PENDING APPRVLS"], format_excel_formula(pending_apprvls))
+        if finance_amnt: set_cell_value(r, header_map["FINANCE AMNT"], format_excel_formula(finance_amnt))
+        if sr_list: set_cell_value(r, header_map["SR"], format_excel_formula(sr_list))
+        if edits_list: set_cell_value(r, header_map["EDITS"], format_excel_formula(edits_list))
+        if ksp_approvals: set_cell_value(r, header_map["(KSP)'Sir's Approvals"], format_excel_formula(ksp_approvals))
 
-# --- SIDEBAR CONTROL PANEL ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.markdown("### 🏢 Happi Control Hub")
     
@@ -177,9 +229,7 @@ with st.sidebar:
         label_visibility="collapsed"
     )
 
-    all_branches = sorted(DEFAULT_BRANCHES, key=lambda x: x["BRANCH"].upper())
     selected_branches = all_branches
-
     if work_mode == "👥 Two Cashiers (Split 50-50)":
         mid_point = math.ceil(len(all_branches) / 2)
         c1_branches = all_branches[:mid_point]
@@ -195,7 +245,7 @@ with st.sidebar:
             image = Image.open(single_snip_file)
             with st.spinner(f"Mapping {target_branch_name}..."):
                 process_cashbook_image(image, target_branch_name)
-                st.success(f"✅ Mapped {target_branch_name}!")
+                st.success(f"✅ Mapped to {target_branch_name} permanently!")
                 st.rerun()
 
     with st.expander("📂 2. Apex Dr Balance File", expanded=False):
@@ -206,12 +256,12 @@ with st.sidebar:
 
     st.markdown("---")
     st.markdown("#### ⚙️ Data Actions")
-    if st.button("🧹 Clear & Reset All Data", use_container_width=True):
-        st.session_state.clear_local_storage = True
-        st.session_state.new_updates = {}
+    if st.button("🧹 Clear & Reset Master Server DB", use_container_width=True):
+        global_store["store_cells"] = {}
+        save_db({})
         st.rerun()
 
-# Process Ingestions into Session Updates
+# Process Ingestions directly into Global Store
 if addins_dump_file:
     try:
         df_addins = pd.read_csv(addins_dump_file) if addins_dump_file.name.endswith(".csv") else pd.read_excel(addins_dump_file)
@@ -232,8 +282,9 @@ if addins_dump_file:
         for b in all_branches:
             vouchers = addins_dict.get(normalize_name(b["BRANCH"]), addins_dict.get(normalize_name(b["CODE"]), []))
             if vouchers:
-                st.session_state.new_updates.setdefault(b["BRANCH"], {})["AddinGS"] = format_excel_formula(vouchers)
-        st.sidebar.success("✅ Addins Loaded!")
+                r = branch_row_map[b["BRANCH"]]
+                set_cell_value(r, header_map["AddinGS"], format_excel_formula(vouchers))
+        st.sidebar.success("✅ Addins Synced Globally!")
     except Exception as e:
         st.sidebar.error(f"Addins Error: {e}")
 
@@ -255,60 +306,46 @@ if ho_dump_file:
         for b in all_branches:
             val = dump_dict.get(normalize_name(b["BRANCH"]), dump_dict.get(normalize_name(b["CODE"])))
             if val is not None:
-                st.session_state.new_updates.setdefault(b["BRANCH"], {})["OPENING BALANCE"] = str(val)
-        st.sidebar.success("✅ Apex Dr Balances Loaded!")
+                r = branch_row_map[b["BRANCH"]]
+                set_cell_value(r, header_map["OPENING BALANCE"], str(val))
+        st.sidebar.success("✅ Dr Balances Synced Globally!")
     except Exception as e:
         st.sidebar.error(f"Apex Error: {e}")
 
-# Header
-st.markdown(f'<div class="main-title">📊 HAPPI MOBILES - MASTER CASHBOOK WORKSPACE <span style="font-size: 13px; color: #64748b; font-weight: normal;">({len(selected_branches)} Stores Active)</span></div>', unsafe_allow_html=True)
+# Build Full Celldata from Global Server State
+server_celldata = []
 
-# Build Baseline Cell Matrix
-headers = [
-    "SL.No.", "CODE", "BRANCH", "OPENING BALANCE", "DEPOSIT", "DENOMINATION", 
-    "AddinGS", "PENDING APPRVLS", "FINANCE AMNT", "SR", "SWEEPER SALARY", 
-    "EDITS", "APX SHORTAGE", "(KSP)'Sir's Approvals", "CLOSING BALANCE", "REMARKS"
-]
-
-header_map = {name: idx for idx, name in enumerate(headers)}
-baseline_celldata = []
-
+# Row 0: Headers
 for c_idx, h_text in enumerate(headers):
-    baseline_celldata.append({
+    server_celldata.append({
         "r": 0, "c": c_idx,
         "v": { "v": h_text, "m": h_text, "bg": "#1e7082", "fc": "#ffffff", "bl": 1, "ht": 0, "vt": 0 }
     })
 
+# Rows 1 to N
 for r_idx, b in enumerate(all_branches, start=1):
+    # SL.No, CODE, BRANCH
+    server_celldata.append({"r": r_idx, "c": 0, "v": {"v": str(r_idx), "ct": {"fa": "General", "t": "n"}}})
+    server_celldata.append({"r": r_idx, "c": 1, "v": {"v": b["CODE"], "ct": {"fa": "General", "t": "g"}}})
+    server_celldata.append({"r": r_idx, "c": 2, "v": {"v": b["BRANCH"], "ct": {"fa": "General", "t": "g"}}})
+
+    # Default Closing Formula if not customized
     excel_row_num = r_idx + 1
-    default_closing_formula = f"=D{excel_row_num}-SUM(E{excel_row_num}:N{excel_row_num})"
+    closing_key = f"{r_idx}_{header_map['CLOSING BALANCE']}"
+    if closing_key not in global_store["store_cells"]:
+        global_store["store_cells"][closing_key] = {"f": f"=D{excel_row_num}-SUM(E{excel_row_num}:N{excel_row_num})"}
 
-    row_vals = [
-        str(r_idx), b["CODE"], b["BRANCH"], "", "", "", "", "", "", "", "", "", "", "", default_closing_formula, ""
-    ]
+    for c_idx in range(3, len(headers)):
+        k = f"{r_idx}_{c_idx}"
+        if k in global_store["store_cells"]:
+            server_celldata.append({
+                "r": r_idx, "c": c_idx,
+                "v": global_store["store_cells"][k]
+            })
 
-    for c_idx, val in enumerate(row_vals):
-        if val:
-            cell_obj = {"r": r_idx, "c": c_idx, "v": {}}
-            if str(val).startswith("="):
-                cell_obj["v"]["f"] = str(val)
-            else:
-                try:
-                    num = float(str(val).replace(",", ""))
-                    cell_obj["v"]["v"] = int(round(num)) if num.is_integer() else num
-                    cell_obj["v"]["ct"] = {"fa": "General", "t": "n"}
-                except:
-                    cell_obj["v"]["v"] = str(val)
-                    cell_obj["v"]["ct"] = {"fa": "General", "t": "g"}
-            baseline_celldata.append(cell_obj)
+st.markdown(f'<div class="main-title">📊 HAPPI MOBILES - MASTER CASHBOOK WORKSPACE <span style="font-size: 13px; color: #16a34a; font-weight: bold;">● Cloud Synced Real-Time</span></div>', unsafe_allow_html=True)
 
-# Prepare JSON payloads
-branch_row_map = {b["BRANCH"]: idx + 1 for idx, b in enumerate(all_branches)}
-new_updates_json = json.dumps(st.session_state.new_updates)
-clear_flag = "true" if st.session_state.get("clear_local_storage", False) else "false"
-if st.session_state.get("clear_local_storage", False):
-    st.session_state.clear_local_storage = False
-
+# Full Persistent Luckysheet Component
 luckysheet_html = f"""
 <!DOCTYPE html>
 <html>
@@ -329,83 +366,8 @@ luckysheet_html = f"""
     <div id="luckysheet"></div>
     <script>
         $(function () {{
-            const STORAGE_KEY = "HAPPI_PERMANENT_MASTER_CASHBOOK_GRID";
-            const clearFlag = {clear_flag};
-            if (clearFlag) {{
-                localStorage.removeItem(STORAGE_KEY);
-            }}
+            const masterData = {json.dumps(server_celldata)};
 
-            let baselineData = {json.dumps(baseline_celldata)};
-            const branchMap = {json.dumps(branch_row_map)};
-            const headerMap = {json.dumps(header_map)};
-            const newUpdates = {new_updates_json};
-
-            // 1. Load saved data from permanent browser storage
-            let currentCells = [];
-            const saved = localStorage.getItem(STORAGE_KEY);
-            if (saved) {{
-                try {{
-                    currentCells = JSON.parse(saved);
-                }} catch(e) {{
-                    currentCells = baselineData;
-                }}
-            }} else {{
-                currentCells = baselineData;
-            }}
-
-            // Helper to update or insert cell
-            function setCellValue(r, c, val) {{
-                let found = false;
-                for (let i = 0; i < currentCells.length; i++) {{
-                    if (currentCells[i].r === r && currentCells[i].c === c) {{
-                        if (String(val).startsWith('=')) {{
-                            currentCells[i].v = {{ f: String(val) }};
-                        }} else {{
-                            let num = parseFloat(String(val).replace(/,/g, ''));
-                            if (!isNaN(num)) {{
-                                currentCells[i].v = {{ v: num, ct: {{ fa: "General", t: "n" }} }};
-                            }} else {{
-                                currentCells[i].v = {{ v: String(val), ct: {{ fa: "General", t: "g" }} }};
-                            }}
-                        }}
-                        found = true;
-                        break;
-                    }}
-                }}
-                if (!found) {{
-                    let cellObj = {{ r: r, c: c, v: {{}} }};
-                    if (String(val).startsWith('=')) {{
-                        cellObj.v.f = String(val);
-                    }} else {{
-                        let num = parseFloat(String(val).replace(/,/g, ''));
-                        if (!isNaN(num)) {{
-                            cellObj.v = {{ v: num, ct: {{ fa: "General", t: "n" }} }};
-                        }} else {{
-                            cellObj.v = {{ v: String(val), ct: {{ fa: "General", t: "g" }} }};
-                        }}
-                    }}
-                    currentCells.push(cellObj);
-                }}
-            }}
-
-            // 2. Merge newly ingested OCR / Excel data
-            if (newUpdates && Object.keys(newUpdates).length > 0) {{
-                for (let branch in newUpdates) {{
-                    if (branchMap[branch] !== undefined) {{
-                        let r = branchMap[branch];
-                        let fields = newUpdates[branch];
-                        for (let colName in fields) {{
-                            if (headerMap[colName] !== undefined) {{
-                                let c = headerMap[colName];
-                                setCellValue(r, c, fields[colName]);
-                            }}
-                        }}
-                    }}
-                }}
-                localStorage.setItem(STORAGE_KEY, JSON.stringify(currentCells));
-            }}
-
-            // 3. Initialize Luckysheet with Auto-Saving Hook
             luckysheet.create({{
                 container: 'luckysheet',
                 showinfobar: false,
@@ -413,16 +375,6 @@ luckysheet_html = f"""
                 showstatisticBar: true,
                 enableAddRow: false,
                 enableAddBackTop: false,
-                hook: {{
-                    cellUpdated: function(r, c, oldVal, newVal, isRefresh) {{
-                        setTimeout(() => {{
-                            try {{
-                                const allCells = luckysheet.getluckysheetfile()[0].celldata;
-                                localStorage.setItem(STORAGE_KEY, JSON.stringify(allCells));
-                            }} catch(err) {{}}
-                        }}, 200);
-                    }}
-                }},
                 data: [{{
                     "name": "MASTER REPORT",
                     "status": 1,
@@ -435,7 +387,7 @@ luckysheet_html = f"""
                             "12": 110, "13": 140, "14": 130, "15": 120
                         }}
                     }},
-                    "celldata": currentCells,
+                    "celldata": masterData,
                     "row": {len(all_branches) + 5},
                     "column": 18
                 }}]
