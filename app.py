@@ -8,7 +8,6 @@ import pandas as pd
 from PIL import Image
 import pytesseract
 import streamlit as st
-import streamlit.components.v1 as components
 
 st.set_page_config(page_title="Happi Cashbook Master", layout="wide", initial_sidebar_state="expanded")
 
@@ -34,7 +33,6 @@ st.markdown("""
         gap: 8px; 
     }
     .stSidebar { background-color: #f8fafc; }
-    iframe { height: calc(100vh - 65px) !important; width: 100% !important; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -97,17 +95,8 @@ DEFAULT_BRANCHES = [
     {"CODE": "ZB", "BRANCH": "ZAHEERABAD"}
 ]
 
-# Universal Global Shared Cache
 @st.cache_resource
-def get_global_store():
-    return {
-        "store_cells": {}
-    }
-
-global_store = get_global_store()
-
-# Load DB helper
-def load_db():
+def get_shared_db():
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, "r") as f:
@@ -116,31 +105,14 @@ def load_db():
             pass
     return {
         "branches": sorted(DEFAULT_BRANCHES, key=lambda x: x["BRANCH"].upper()),
-        "store_cells": {}
+        "entries": {}
     }
 
-def save_db(cells_data):
-    db_to_save = {
-        "branches": sorted(DEFAULT_BRANCHES, key=lambda x: x["BRANCH"].upper()),
-        "store_cells": cells_data
-    }
+db = get_shared_db()
+
+def save_db():
     with open(DB_FILE, "w") as f:
-        json.dump(db_to_save, f, indent=2)
-
-if not global_store["store_cells"]:
-    disk_db = load_db()
-    global_store["store_cells"] = disk_db.get("store_cells", {})
-
-all_branches = sorted(DEFAULT_BRANCHES, key=lambda x: x["BRANCH"].upper())
-
-headers = [
-    "SL.No.", "CODE", "BRANCH", "OPENING BALANCE", "DEPOSIT", "DENOMINATION", 
-    "AddinGS", "PENDING APPRVLS", "FINANCE AMNT", "SR", "SWEEPER SALARY", 
-    "EDITS", "APX SHORTAGE", "(KSP)'Sir's Approvals", "CLOSING BALANCE", "REMARKS"
-]
-
-header_map = {name: idx for idx, name in enumerate(headers)}
-branch_row_map = {b["BRANCH"]: idx + 1 for idx, b in enumerate(all_branches)}
+        json.dump(db, f, indent=2)
 
 def format_excel_formula(num_list):
     if not num_list: return ""
@@ -153,17 +125,20 @@ def normalize_name(s):
     if not s: return ""
     return re.sub(r"[^A-Za-z0-9]", "", str(s)).upper()
 
-def set_cell_value(r, c, val):
-    key = f"{r}_{c}"
-    if str(val).startswith("="):
-        global_store["store_cells"][key] = {"f": str(val)}
-    else:
+def evaluate_val(val):
+    if not val: return 0
+    s = str(val).strip()
+    if s.startswith("="):
+        expr = s[1:]
         try:
-            num = float(str(val).replace(",", ""))
-            global_store["store_cells"][key] = {"v": int(round(num)) if num.is_integer() else num, "ct": {"fa": "General", "t": "n"}}
+            if re.match(r"^[0-9+\-*/().\s]+$", expr):
+                return float(eval(expr))
         except:
-            global_store["store_cells"][key] = {"v": str(val), "ct": {"fa": "General", "t": "g"}}
-    save_db(global_store["store_cells"])
+            return 0
+    try:
+        return float(s.replace(",", ""))
+    except:
+        return 0
 
 def process_cashbook_image(pil_img, target_branch):
     text_data = pytesseract.image_to_string(pil_img)
@@ -210,14 +185,14 @@ def process_cashbook_image(pil_img, target_branch):
             if tot_nums:
                 denom_val = str(int(float(tot_nums[-1].replace(",", ""))))
 
-    r = branch_row_map.get(target_branch)
-    if r:
-        if denom_val: set_cell_value(r, header_map["DENOMINATION"], denom_val)
-        if pending_apprvls: set_cell_value(r, header_map["PENDING APPRVLS"], format_excel_formula(pending_apprvls))
-        if finance_amnt: set_cell_value(r, header_map["FINANCE AMNT"], format_excel_formula(finance_amnt))
-        if sr_list: set_cell_value(r, header_map["SR"], format_excel_formula(sr_list))
-        if edits_list: set_cell_value(r, header_map["EDITS"], format_excel_formula(edits_list))
-        if ksp_approvals: set_cell_value(r, header_map["(KSP)'Sir's Approvals"], format_excel_formula(ksp_approvals))
+    store_entry = db["entries"].setdefault(target_branch, {})
+    if denom_val: store_entry["DENOMINATION"] = denom_val
+    if pending_apprvls: store_entry["PENDING APPRVLS"] = format_excel_formula(pending_apprvls)
+    if finance_amnt: store_entry["FINANCE AMNT"] = format_excel_formula(finance_amnt)
+    if sr_list: store_entry["SR"] = format_excel_formula(sr_list)
+    if edits_list: store_entry["EDITS"] = format_excel_formula(edits_list)
+    if ksp_approvals: store_entry["(KSP)'Sir's Approvals"] = format_excel_formula(ksp_approvals)
+    save_db()
 
 # --- SIDEBAR ---
 with st.sidebar:
@@ -229,7 +204,9 @@ with st.sidebar:
         label_visibility="collapsed"
     )
 
+    all_branches = db["branches"]
     selected_branches = all_branches
+
     if work_mode == "👥 Two Cashiers (Split 50-50)":
         mid_point = math.ceil(len(all_branches) / 2)
         c1_branches = all_branches[:mid_point]
@@ -245,7 +222,7 @@ with st.sidebar:
             image = Image.open(single_snip_file)
             with st.spinner(f"Mapping {target_branch_name}..."):
                 process_cashbook_image(image, target_branch_name)
-                st.success(f"✅ Mapped to {target_branch_name} permanently!")
+                st.success(f"✅ Mapped & Synced {target_branch_name}!")
                 st.rerun()
 
     with st.expander("📂 2. Apex Dr Balance File", expanded=False):
@@ -257,11 +234,11 @@ with st.sidebar:
     st.markdown("---")
     st.markdown("#### ⚙️ Data Actions")
     if st.button("🧹 Clear & Reset Master Server DB", use_container_width=True):
-        global_store["store_cells"] = {}
-        save_db({})
+        db["entries"] = {}
+        save_db()
         st.rerun()
 
-# Process Ingestions directly into Global Store
+# Process Ingestions directly into Global Server State
 if addins_dump_file:
     try:
         df_addins = pd.read_csv(addins_dump_file) if addins_dump_file.name.endswith(".csv") else pd.read_excel(addins_dump_file)
@@ -282,8 +259,8 @@ if addins_dump_file:
         for b in all_branches:
             vouchers = addins_dict.get(normalize_name(b["BRANCH"]), addins_dict.get(normalize_name(b["CODE"]), []))
             if vouchers:
-                r = branch_row_map[b["BRANCH"]]
-                set_cell_value(r, header_map["AddinGS"], format_excel_formula(vouchers))
+                db["entries"].setdefault(b["BRANCH"], {})["AddinGS"] = format_excel_formula(vouchers)
+        save_db()
         st.sidebar.success("✅ Addins Synced Globally!")
     except Exception as e:
         st.sidebar.error(f"Addins Error: {e}")
@@ -306,96 +283,110 @@ if ho_dump_file:
         for b in all_branches:
             val = dump_dict.get(normalize_name(b["BRANCH"]), dump_dict.get(normalize_name(b["CODE"])))
             if val is not None:
-                r = branch_row_map[b["BRANCH"]]
-                set_cell_value(r, header_map["OPENING BALANCE"], str(val))
+                db["entries"].setdefault(b["BRANCH"], {})["OPENING BALANCE"] = str(val)
+        save_db()
         st.sidebar.success("✅ Dr Balances Synced Globally!")
     except Exception as e:
         st.sidebar.error(f"Apex Error: {e}")
 
-# Build Full Celldata from Global Server State
-server_celldata = []
+# Build DataFrame
+data_matrix = []
+for idx, b in enumerate(selected_branches, start=1):
+    b_name = b["BRANCH"]
+    e = db["entries"].get(b_name, {})
 
-# Row 0: Headers
-for c_idx, h_text in enumerate(headers):
-    server_celldata.append({
-        "r": 0, "c": c_idx,
-        "v": { "v": h_text, "m": h_text, "bg": "#1e7082", "fc": "#ffffff", "bl": 1, "ht": 0, "vt": 0 }
+    op_bal = e.get("OPENING BALANCE", "")
+    dep = e.get("DEPOSIT", "")
+    den = e.get("DENOMINATION", "")
+    addin = e.get("AddinGS", "")
+    pend = e.get("PENDING APPRVLS", "")
+    fin = e.get("FINANCE AMNT", "")
+    sr = e.get("SR", "")
+    swp = e.get("SWEEPER SALARY", "")
+    edt = e.get("EDITS", "")
+    apx_sh = e.get("APX SHORTAGE", "")
+    ksp = e.get("(KSP)'Sir's Approvals", "")
+    rem = e.get("REMARKS", "")
+
+    # Auto-Calculate Live Closing Balance
+    total_deductions = sum([
+        evaluate_val(dep), evaluate_val(den), evaluate_val(addin),
+        evaluate_val(pend), evaluate_val(fin), evaluate_val(sr),
+        evaluate_val(swp), evaluate_val(edt), evaluate_val(apx_sh),
+        evaluate_val(ksp)
+    ])
+    
+    closing_val = evaluate_val(op_bal) - total_deductions
+    closing_display = str(int(round(closing_val))) if op_bal != "" else ""
+
+    data_matrix.append({
+        "Sl.No.": idx,
+        "CODE": b["CODE"],
+        "BRANCH": b["BRANCH"],
+        "OPENING BALANCE": op_bal,
+        "DEPOSIT": dep,
+        "DENOMINATION": den,
+        "AddinGS": addin,
+        "PENDING APPRVLS": pend,
+        "FINANCE AMNT": fin,
+        "SR": sr,
+        "SWEEPER SALARY": swp,
+        "EDITS": edt,
+        "APX SHORTAGE": apx_sh,
+        "(KSP)'Sir's Approvals": ksp,
+        "CLOSING BALANCE": closing_display,
+        "REMARKS": rem
     })
 
-# Rows 1 to N
-for r_idx, b in enumerate(all_branches, start=1):
-    # SL.No, CODE, BRANCH
-    server_celldata.append({"r": r_idx, "c": 0, "v": {"v": str(r_idx), "ct": {"fa": "General", "t": "n"}}})
-    server_celldata.append({"r": r_idx, "c": 1, "v": {"v": b["CODE"], "ct": {"fa": "General", "t": "g"}}})
-    server_celldata.append({"r": r_idx, "c": 2, "v": {"v": b["BRANCH"], "ct": {"fa": "General", "t": "g"}}})
+df_active = pd.DataFrame(data_matrix)
 
-    # Default Closing Formula if not customized
-    excel_row_num = r_idx + 1
-    closing_key = f"{r_idx}_{header_map['CLOSING BALANCE']}"
-    if closing_key not in global_store["store_cells"]:
-        global_store["store_cells"][closing_key] = {"f": f"=D{excel_row_num}-SUM(E{excel_row_num}:N{excel_row_num})"}
+col_head1, col_head2 = st.columns([3.5, 1])
 
-    for c_idx in range(3, len(headers)):
-        k = f"{r_idx}_{c_idx}"
-        if k in global_store["store_cells"]:
-            server_celldata.append({
-                "r": r_idx, "c": c_idx,
-                "v": global_store["store_cells"][k]
-            })
+with col_head1:
+    st.markdown(f'<div class="main-title">📊 HAPPI MOBILES - MASTER CASHBOOK WORKSPACE <span style="font-size: 13px; color: #16a34a; font-weight: bold;">● Cloud Synced Real-Time</span></div>', unsafe_allow_html=True)
 
-st.markdown(f'<div class="main-title">📊 HAPPI MOBILES - MASTER CASHBOOK WORKSPACE <span style="font-size: 13px; color: #16a34a; font-weight: bold;">● Cloud Synced Real-Time</span></div>', unsafe_allow_html=True)
+with col_head2:
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_active.to_excel(writer, index=False, sheet_name='MASTER REPORT')
+    st.download_button(
+        label="📥 Download Master Excel",
+        data=output.getvalue(),
+        file_name="HO_MASTER_CASHBOOK_REPORT.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
 
-# Full Persistent Luckysheet Component
-luckysheet_html = f"""
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8" />
-    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/plugins/css/pluginsCss.css' />
-    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/plugins/plugins.css' />
-    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/css/luckysheet.css' />
-    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/assets/iconfont/iconfont.css' />
-    <script src="https://cdn.jsdelivr.net/npm/luckysheet/dist/plugins/js/plugin.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/luckysheet/dist/luckysheet.umd.js"></script>
-    <style>
-        html, body {{ margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }}
-        #luckysheet {{ margin: 0px; padding: 0px; position: absolute; width: 100%; height: 100%; left: 0px; top: 0px; }}
-    </style>
-</head>
-<body>
-    <div id="luckysheet"></div>
-    <script>
-        $(function () {{
-            const masterData = {json.dumps(server_celldata)};
+column_config = {
+    col: st.column_config.TextColumn(col) for col in [
+        "OPENING BALANCE", "DEPOSIT", "DENOMINATION", "AddinGS", "PENDING APPRVLS",
+        "FINANCE AMNT", "SR", "SWEEPER SALARY", "EDITS", "APX SHORTAGE",
+        "(KSP)'Sir's Approvals", "REMARKS"
+    ]
+}
+column_config["CLOSING BALANCE"] = st.column_config.TextColumn("CLOSING BALANCE", disabled=True)
 
-            luckysheet.create({{
-                container: 'luckysheet',
-                showinfobar: false,
-                showsheetbar: false,
-                showstatisticBar: true,
-                enableAddRow: false,
-                enableAddBackTop: false,
-                data: [{{
-                    "name": "MASTER REPORT",
-                    "status": 1,
-                    "order": 0,
-                    "data": [],
-                    "config": {{
-                        "columnlen": {{
-                            "0": 55, "1": 75, "2": 150, "3": 130, "4": 90, "5": 110,
-                            "6": 100, "7": 130, "8": 110, "9": 90, "10": 120, "11": 90,
-                            "12": 110, "13": 140, "14": 130, "15": 120
-                        }}
-                    }},
-                    "celldata": masterData,
-                    "row": {len(all_branches) + 5},
-                    "column": 18
-                }}]
-            }});
-        }});
-    </script>
-</body>
-</html>
-"""
+edited_df = st.data_editor(
+    df_active,
+    use_container_width=True,
+    height=780,
+    disabled=["Sl.No.", "CODE", "BRANCH", "CLOSING BALANCE"],
+    column_config=column_config,
+    num_rows="fixed",
+    key="master_live_editor"
+)
 
-components.html(luckysheet_html, height=890)
+# Sync edits back to server storage immediately
+has_changes = False
+for _, row in edited_df.iterrows():
+    b_name = row["BRANCH"]
+    store_entry = db["entries"].setdefault(b_name, {})
+    for col in ["OPENING BALANCE", "DEPOSIT", "DENOMINATION", "AddinGS", "PENDING APPRVLS", "FINANCE AMNT", "SR", "SWEEPER SALARY", "EDITS", "APX SHORTAGE", "(KSP)'Sir's Approvals", "REMARKS"]:
+        val = str(row[col]) if pd.notna(row[col]) else ""
+        if store_entry.get(col, "") != val:
+            store_entry[col] = val
+            has_changes = True
+
+if has_changes:
+    save_db()
+    st.rerun()
