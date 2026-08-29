@@ -14,9 +14,8 @@ st.set_page_config(page_title="Happi Cashbook Master", layout="wide", initial_si
 
 st.markdown("""
     <style>
-    /* Maximize container and remove all default margins */
     .block-container { 
-        padding-top: 0.6rem !important; 
+        padding-top: 0.5rem !important; 
         padding-bottom: 0rem !important; 
         padding-left: 1rem !important; 
         padding-right: 1rem !important; 
@@ -116,7 +115,7 @@ def load_db():
         "addins_data": {},
         "store_data": {},
         "manual_edits": {},
-        "metadata": {}
+        "sheet_matrix": {}
     }
 
 def save_db(data):
@@ -124,8 +123,8 @@ def save_db(data):
         json.dump(data, f, indent=2)
 
 db = load_db()
-if "addins_data" not in db:
-    db["addins_data"] = {}
+if "sheet_matrix" not in db:
+    db["sheet_matrix"] = {}
 
 def format_excel_formula(num_list):
     if not num_list:
@@ -212,8 +211,6 @@ def process_cashbook_image(pil_img, target_branch):
     db["manual_edits"][target_branch]["SR"] = f_sr
     db["manual_edits"][target_branch]["EDITS"] = f_edits
     db["manual_edits"][target_branch]["(KSP)'Sir's Approvals"] = f_ksp
-    db["manual_edits"][target_branch]["CLOSING BALANCE"] = ""
-    db["manual_edits"][target_branch]["DEPOSIT"] = ""
     
     save_db(db)
 
@@ -221,7 +218,6 @@ def process_cashbook_image(pil_img, target_branch):
 with st.sidebar:
     st.markdown("### 🏢 Happi Control Hub")
     
-    st.markdown("#### 👥 Work Mode")
     work_mode = st.radio(
         "Assignment Mode:",
         ["👤 Single Cashier (All Stores)", "👥 Two Cashiers (Split 50-50)"],
@@ -247,8 +243,6 @@ with st.sidebar:
             selected_branches = c2_branches
 
     st.markdown("---")
-    st.markdown("#### 📥 Smart Ingestion Hub")
-    
     with st.expander("📸 1. Single Store Snip (OCR)", expanded=True):
         target_branch_name = st.selectbox("Target Store:", [b["BRANCH"] for b in selected_branches], key="snip_paste_store")
         single_snip_file = st.file_uploader("Upload Cashbook Snip", type=["png", "jpg", "jpeg"], key=f"single_snip_{target_branch_name}")
@@ -289,7 +283,7 @@ with st.sidebar:
     if st.button("🧹 Reset All Store Records", use_container_width=True):
         db["store_data"] = {}
         db["manual_edits"] = {}
-        db["metadata"] = {}
+        db["sheet_matrix"] = {}
         save_db(db)
         st.rerun()
 
@@ -430,7 +424,7 @@ with col_head2:
         use_container_width=True
     )
 
-# --- PREPARE FULL-SCREEN EXCEL GRID ---
+# --- PREPARE PERSISTENT EXCEL GRID WITH AUTO-GENERATED FORMULAS ---
 headers = [
     "SL.No.", "CODE", "BRANCH", "OPENING BALANCE", "DEPOSIT", "DENOMINATION", 
     "AddinGS", "PENDING APPRVLS", "FINANCE AMNT", "SR", "SWEEPER SALARY", 
@@ -439,18 +433,23 @@ headers = [
 
 celldata = []
 
+# Row 0: Headers
 for c_idx, h_text in enumerate(headers):
     celldata.append({
         "r": 0, "c": c_idx,
         "v": { "v": h_text, "m": h_text, "bg": "#1e7082", "fc": "#ffffff", "bl": 1, "ht": 0, "vt": 0 }
     })
 
+# Row 1 to N: Store Data with Native Closing Balance Formula (=D2-SUM(E2:N2))
 for r_idx, b in enumerate(selected_branches, start=1):
     b_name = b["BRANCH"]
     d = db["store_data"].get(b_name, {})
     opening_bal = db["ho_balances"].get(b_name, "")
     addins_val = db["addins_data"].get(b_name, "")
     manual = db["manual_edits"].get(b_name, {})
+    
+    excel_row_num = r_idx + 1  # Row index in Excel (Row 2, Row 3...)
+    default_closing_formula = f"=D{excel_row_num}-SUM(E{excel_row_num}:N{excel_row_num})"
 
     row_vals = [
         str(r_idx),
@@ -467,7 +466,7 @@ for r_idx, b in enumerate(selected_branches, start=1):
         str(manual.get("EDITS", str(d.get("EDITS", "")))),
         str(manual.get("APX SHORTAGE", "")),
         str(manual.get("(KSP)'Sir's Approvals", str(d.get("(KSP)'Sir's Approvals", "")))),
-        str(manual.get("CLOSING BALANCE", "")),
+        manual.get("CLOSING BALANCE", default_closing_formula),
         str(manual.get("REMARKS", ""))
     ]
 
@@ -506,6 +505,8 @@ luckysheet_html = f"""
     <div id="luckysheet"></div>
     <script>
         $(function () {{
+            const baseData = {json.dumps(celldata)};
+
             luckysheet.create({{
                 container: 'luckysheet',
                 showinfobar: false,
@@ -525,7 +526,7 @@ luckysheet_html = f"""
                             "12": 110, "13": 140, "14": 130, "15": 120
                         }}
                     }},
-                    "celldata": {json.dumps(celldata)},
+                    "celldata": baseData,
                     "row": {len(selected_branches) + 5},
                     "column": 18
                 }}]
