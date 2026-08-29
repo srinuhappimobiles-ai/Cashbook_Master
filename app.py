@@ -155,7 +155,7 @@ def load_db():
       "ho_balances": {},
       "store_data": {},
       "manual_edits": {},
-      "metadata": {},  # Stores SR/Finance Bill details for hover preview
+      "metadata": {},
   }
 
 
@@ -233,7 +233,7 @@ def normalize_name(s):
 
 
 def parse_outlook_text(text):
-  """Extracts structured values from direct pasted Outlook text/tables."""
+  """Extracts structured values accurately from pasted Outlook text/tables."""
   extracted = {
       "denom": "",
       "pending_apprvls": [],
@@ -251,10 +251,10 @@ def parse_outlook_text(text):
     if not clean_line:
       continue
 
-    # Extract all numbers from the line
-    nums = re.findall(r"\b\d+(?:,\d+)*(?:\.\d+)?\b", line)
+    # Extract all non-zero numbers
+    tokens = re.findall(r"\b\d+(?:,\d+)*(?:\.\d+)?\b", line)
     clean_nums = []
-    for n in nums:
+    for n in tokens:
       val = extract_number(n)
       if val is not None and val > 0:
         clean_nums.append(int(round(val)) if val.is_integer() else val)
@@ -262,13 +262,26 @@ def parse_outlook_text(text):
     if not clean_nums:
       continue
 
-    target_val = clean_nums[-1]
+    target_val = clean_nums[0]
 
-    # Denomination / Closing Match
-    if any(k in clean_line for k in ["closing", "total", "denomination"]):
+    # 1. Denomination / Closing Match
+    if any(
+        k in clean_line
+        for k in [
+            "closing",
+            "denomination",
+            "denom",
+            "cash balance",
+            "total cash",
+        ]
+    ):
       extracted["denom"] = target_val
+
+    # 2. Approvals (KSP)
     elif any(k in clean_line for k in ["pavan", "santhosh", "sharan"]):
       extracted["ksp_approvals"].append(target_val)
+
+    # 3. Pending Approvals
     elif any(
         k in clean_line
         for k in [
@@ -284,6 +297,8 @@ def parse_outlook_text(text):
         ]
     ):
       extracted["pending_apprvls"].append(target_val)
+
+    # 4. Finance / Cashback / DBD
     elif any(
         k in clean_line
         for k in [
@@ -311,6 +326,8 @@ def parse_outlook_text(text):
       extracted["finance_meta"].append(
           {"bill_no": bill_no, "amount": target_val, "remarks": remark}
       )
+
+    # 5. Sales Return (SR)
     elif any(
         k in clean_line
         for k in ["srn", "sr", "sale return", "sales return", "doa"]
@@ -323,10 +340,49 @@ def parse_outlook_text(text):
           "amount": target_val,
           "reason": "Sales Return",
       })
+
+    # 6. Edits / Extra
     elif "extra" in clean_line or "edit" in clean_line:
       extracted["edits_list"].append(target_val)
 
   return extracted
+
+
+# Add New Store Dynamically
+with st.expander("➕ Add New Store to Master"):
+  c_add1, c_add2, c_add3 = st.columns([2, 3, 2])
+  with c_add1:
+    new_code = (
+        st.text_input("Store Code (e.g. MCHL)", key="new_code_input")
+        .strip()
+        .upper()
+    )
+  with c_add2:
+    new_branch = (
+        st.text_input("Store Name (e.g. MEDCHAL)", key="new_branch_input")
+        .strip()
+        .upper()
+    )
+  with c_add3:
+    st.write("")
+    st.write("")
+    if st.button("Add Store", use_container_width=True):
+      if new_code and new_branch:
+        existing = [b["BRANCH"].upper() for b in db["branches"]]
+        if new_branch in existing:
+          st.warning(f"Store '{new_branch}' already exists!")
+        else:
+          db["branches"].append({"CODE": new_code, "BRANCH": new_branch})
+          db["branches"] = sorted(
+              db["branches"], key=lambda x: x["BRANCH"].upper()
+          )
+          save_db(db)
+          st.success(
+              f"✅ Added '{new_branch}' successfully in alphabetical order!"
+          )
+          st.rerun()
+      else:
+        st.error("Please enter both Store Code and Store Name.")
 
 
 # --- 3 DATA INGESTION COLUMNS ---
@@ -366,7 +422,7 @@ with col3:
       if pasted_box.strip():
         res = parse_outlook_text(pasted_box)
 
-        # Update store data
+        # 1. Update store_data
         db["store_data"][target_store_name] = {
             "DENOMINATION": res["denom"],
             "PENDING APPRVLS": format_excel_formula(res["pending_apprvls"]),
@@ -378,7 +434,36 @@ with col3:
             ),
         }
 
-        # Store metadata for hover preview
+        # 2. Overwrite directly to manual_edits for immediate table reflection
+        if target_store_name not in db["manual_edits"]:
+          db["manual_edits"][target_store_name] = {}
+
+        if res["denom"]:
+          db["manual_edits"][target_store_name]["DENOMINATION"] = str(
+              res["denom"]
+          )
+        if res["pending_apprvls"]:
+          db["manual_edits"][target_store_name]["PENDING APPRVLS"] = (
+              format_excel_formula(res["pending_apprvls"])
+          )
+        if res["finance_amnt"]:
+          db["manual_edits"][target_store_name]["FINANCE AMNT"] = (
+              format_excel_formula(res["finance_amnt"])
+          )
+        if res["sr_list"]:
+          db["manual_edits"][target_store_name]["SR"] = format_excel_formula(
+              res["sr_list"]
+          )
+        if res["edits_list"]:
+          db["manual_edits"][target_store_name]["EDITS"] = (
+              format_excel_formula(res["edits_list"])
+          )
+        if res["ksp_approvals"]:
+          db["manual_edits"][target_store_name]["(KSP)'Sir's Approvals"] = (
+              format_excel_formula(res["ksp_approvals"])
+          )
+
+        # 3. Store metadata for hover preview
         db["metadata"][target_store_name] = {
             "sr": res["sr_meta"],
             "finance": res["finance_meta"],
