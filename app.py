@@ -222,8 +222,25 @@ def format_excel_formula(num_list):
   if not num_list:
     return ""
   if len(num_list) == 1:
-    return num_list[0]
+    return str(num_list[0])
   return "=" + "+".join([str(x) for x in num_list])
+
+
+def evaluate_display_val(val):
+  """Calculates the total if a formula is present, for clean table viewing."""
+  if not val:
+    return ""
+  s = str(val).strip()
+  if s.startswith("="):
+    try:
+      expr = s[1:].replace(",", "")
+      # Only evaluate simple math expressions (+ - * /)
+      if re.match(r"^[\d\.\+\-\*\/\s]+$", expr):
+        total = eval(expr)
+        return int(round(total)) if float(total).is_integer() else round(total, 2)
+    except:
+      pass
+  return s
 
 
 def normalize_name(s):
@@ -241,7 +258,7 @@ reader = load_ocr()
 
 
 def process_cashbook_ocr(img_np, target_branch):
-  """Extracts ONLY Denomination and Approvals. Completely ignores Closing Balance, Deposit, and Addins."""
+  """Extracts ONLY Denomination and Approvals cleanly."""
   height, width = img_np.shape[:2]
   ocr_results = reader.readtext(img_np)
 
@@ -291,7 +308,6 @@ def process_cashbook_ocr(img_np, target_branch):
 
     left_text = " ".join([i["text"] for i in left_items]).lower()
 
-    # Denomination fallback from left deposit text if right total missing
     if not denom_val and "deposit" in left_text:
       for i in reversed(left_items):
         val = extract_number(i["text"], round_val=False)
@@ -299,7 +315,7 @@ def process_cashbook_ocr(img_np, target_branch):
           denom_val = int(round(val)) if val.is_integer() else val
           break
 
-    # Extract Vouchers / Approvals from body (Ignore headers)
+    # Extract Vouchers / Approvals from body
     if not any(
         x in left_text
         for x in [
@@ -383,7 +399,6 @@ def process_cashbook_ocr(img_np, target_branch):
         elif "extra items" in left_text:
           edits_list.append(amt)
 
-  # Update store data
   db["store_data"][target_branch] = {
       "DENOMINATION": denom_val,
       "PENDING APPRVLS": format_excel_formula(pending_apprvls),
@@ -393,16 +408,13 @@ def process_cashbook_ocr(img_np, target_branch):
       "(KSP)'Sir's Approvals": format_excel_formula(ksp_approvals),
   }
 
-  # Update manual edits: EXPLICITLY RESET CLOSING BALANCE SO OLD VALUE DISAPPEARS
   if target_branch not in db["manual_edits"]:
     db["manual_edits"][target_branch] = {}
 
   db["manual_edits"][target_branch]["DENOMINATION"] = (
       str(denom_val) if denom_val else ""
   )
-  db["manual_edits"][target_branch]["CLOSING BALANCE"] = (
-      ""  # FORCED EMPTY (Waiting for formula)
-  )
+  db["manual_edits"][target_branch]["CLOSING BALANCE"] = ""
   db["manual_edits"][target_branch]["PENDING APPRVLS"] = format_excel_formula(
       pending_apprvls
   )
@@ -602,26 +614,32 @@ for idx, b in enumerate(selected_branches, start=1):
       "Sl.No.": idx,
       "CODE": b["CODE"],
       "BRANCH": b["BRANCH"],
-      "OPENING BALANCE": manual.get("OPENING BALANCE", str(opening_bal)),
-      "DEPOSIT": manual.get("DEPOSIT", ""),
-      "DENOMINATION": manual.get(
-          "DENOMINATION", str(d.get("DENOMINATION", ""))
+      "OPENING BALANCE": evaluate_display_val(
+          manual.get("OPENING BALANCE", str(opening_bal))
       ),
-      "AddinGS": manual.get("AddinGS", ""),
-      "PENDING APPRVLS": manual.get(
-          "PENDING APPRVLS", str(d.get("PENDING APPRVLS", ""))
+      "DEPOSIT": evaluate_display_val(manual.get("DEPOSIT", "")),
+      "DENOMINATION": evaluate_display_val(
+          manual.get("DENOMINATION", str(d.get("DENOMINATION", "")))
       ),
-      "FINANCE AMNT": manual.get(
-          "FINANCE AMNT", str(d.get("FINANCE AMNT", ""))
+      "AddinGS": evaluate_display_val(manual.get("AddinGS", "")),
+      "PENDING APPRVLS": evaluate_display_val(
+          manual.get("PENDING APPRVLS", str(d.get("PENDING APPRVLS", "")))
       ),
-      "SR": manual.get("SR", str(d.get("SR", ""))),
-      "SWEEPER SALARY": manual.get("SWEEPER SALARY", ""),
-      "EDITS": manual.get("EDITS", str(d.get("EDITS", ""))),
-      "APX SHORTAGE": manual.get("APX SHORTAGE", ""),
-      "(KSP)'Sir's Approvals": manual.get(
-          "(KSP)'Sir's Approvals", str(d.get("(KSP)'Sir's Approvals", ""))
+      "FINANCE AMNT": evaluate_display_val(
+          manual.get("FINANCE AMNT", str(d.get("FINANCE AMNT", "")))
       ),
-      "CLOSING BALANCE": manual.get("CLOSING BALANCE", ""),
+      "SR": evaluate_display_val(manual.get("SR", str(d.get("SR", "")))),
+      "SWEEPER SALARY": evaluate_display_val(manual.get("SWEEPER SALARY", "")),
+      "EDITS": evaluate_display_val(
+          manual.get("EDITS", str(d.get("EDITS", "")))
+      ),
+      "APX SHORTAGE": evaluate_display_val(manual.get("APX SHORTAGE", "")),
+      "(KSP)'Sir's Approvals": evaluate_display_val(
+          manual.get(
+              "(KSP)'Sir's Approvals", str(d.get("(KSP)'Sir's Approvals", ""))
+          )
+      ),
+      "CLOSING BALANCE": evaluate_display_val(manual.get("CLOSING BALANCE", "")),
       "REMARKS": manual.get("REMARKS", ""),
   })
 
