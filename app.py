@@ -119,21 +119,17 @@ all_branches = db["branches"]
 SUPPORTED_EXCEL_TYPES = ["xlsx", "xls", "xlsm", "xlsb", "csv"]
 
 def normalize_key(s):
-    if not s:
-        return ""
+    if not s: return ""
     return re.sub(r"[^A-Za-z0-9]", "", str(s)).upper()
 
 def format_excel_formula(num_list):
-    if not num_list:
-        return ""
+    if not num_list: return ""
     clean_ints = [str(int(x)) for x in num_list if x > 0]
-    if not clean_ints:
-        return ""
-    if len(clean_ints) == 1:
-        return clean_ints[0]
+    if not clean_ints: return ""
+    if len(clean_ints) == 1: return clean_ints[0]
     return "=" + "+".join(clean_ints)
 
-# --- SIDEBAR CONTROL PANEL ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.markdown("### 🏢 Happi Control Hub")
     
@@ -164,7 +160,16 @@ with st.sidebar:
         master_import_file = st.file_uploader("Upload Local Sheet to Populate", type=SUPPORTED_EXCEL_TYPES, key="local_master_uploader")
 
     st.markdown("---")
-    st.markdown("#### ⚙️ Data Actions")
+    st.markdown("#### ⌨️ Excel 2010 Active Shortcuts")
+    st.info("""
+    * **Ctrl + D**: Fill Down (Drag/Copy formula downward)
+    * **Ctrl + R**: Fill Right (Copy formula rightward)
+    * **Alt + H + B + A**: Apply All Borders
+    * **Alt + H + B + N**: Remove All Borders
+    * **Alt + =**: AutoSum Formula
+    * **Ctrl + B / I / U**: Bold / Italic / Underline
+    """)
+
     if st.button("🧹 Clear & Reset Master Cashbook", use_container_width=True):
         db["entries"] = {}
         st.rerun()
@@ -215,8 +220,7 @@ if master_import_file:
         imported_count = 0
         for _, row in df_imported.iterrows():
             b_val_norm = normalize_key(row[b_col_actual])
-            if not b_val_norm:
-                continue
+            if not b_val_norm: continue
 
             matched_branch = None
             for b in all_branches:
@@ -244,10 +248,8 @@ if ho_dump_file:
         df_dump = pd.read_csv(ho_dump_file) if ho_dump_file.name.endswith(".csv") else pd.read_excel(ho_dump_file)
         b_col, a_col = df_dump.columns[0], df_dump.columns[1] if len(df_dump.columns) > 1 else df_dump.columns[0]
         for col in df_dump.columns:
-            if "branch" in str(col).lower() or "store" in str(col).lower():
-                b_col = col
-            if "balance" in str(col).lower() or "opening" in str(col).lower() or "amount" in str(col).lower():
-                a_col = col
+            if "branch" in str(col).lower() or "store" in str(col).lower(): b_col = col
+            if "balance" in str(col).lower() or "opening" in str(col).lower() or "amount" in str(col).lower(): a_col = col
 
         dump_dict = {}
         for _, row in df_dump.iterrows():
@@ -270,10 +272,8 @@ if addins_dump_file:
         df_addins = pd.read_csv(addins_dump_file) if addins_dump_file.name.endswith(".csv") else pd.read_excel(addins_dump_file)
         b_col, a_col = df_addins.columns[0], df_addins.columns[1] if len(df_addins.columns) > 1 else df_addins.columns[0]
         for col in df_addins.columns:
-            if "branch" in str(col).lower() or "store" in str(col).lower():
-                b_col = col
-            if "amount" in str(col).lower() or "total" in str(col).lower() or "addin" in str(col).lower():
-                a_col = col
+            if "branch" in str(col).lower() or "store" in str(col).lower(): b_col = col
+            if "amount" in str(col).lower() or "total" in str(col).lower() or "addin" in str(col).lower(): a_col = col
 
         addins_dict = {}
         for _, row in df_addins.iterrows():
@@ -383,7 +383,7 @@ with col_head2:
         use_container_width=True
     )
 
-# Full Excel 2010 Native Spreadsheet Engine
+# Full Excel 2010 Native Spreadsheet Engine with Keyboard Event Hooks (Ctrl+D, Alt+HBA, etc.)
 excel_2010_html = f"""
 <!DOCTYPE html>
 <html>
@@ -428,6 +428,161 @@ excel_2010_html = f"""
                     "row": {len(selected_branches) + 5},
                     "column": 18
                 }}]
+            }});
+
+            // Helper to shift formula row references when dragging/filling down
+            function shiftFormulaRows(formulaStr, rowDelta) {{
+                return formulaStr.replace(/([A-Za-z]+)(\\d+)/g, function(match, col, row) {{
+                    let newRow = parseInt(row, 10) + rowDelta;
+                    return col + newRow;
+                }});
+            }}
+
+            // Helper to shift formula column references when filling right
+            function shiftFormulaCols(formulaStr, colDelta) {{
+                return formulaStr.replace(/([A-Z]+)(\\d+)/g, function(match, col, row) {{
+                    let colNum = 0;
+                    for (let i = 0; i < col.length; i++) {{
+                        colNum = colNum * 26 + (col.charCodeAt(i) - 64);
+                    }}
+                    colNum += colDelta;
+                    let newCol = '';
+                    while (colNum > 0) {{
+                        let rem = (colNum - 1) % 26;
+                        newCol = String.fromCharCode(65 + rem) + newCol;
+                        colNum = Math.floor((colNum - 1) / 26);
+                    }}
+                    return newCol + row;
+                }});
+            }}
+
+            // Native Excel 2010 Keyboard Shortcut Handler
+            let altSequence = [];
+            let altTimer = null;
+
+            $(document).on('keydown', function (e) {{
+                let range = luckysheet.getRange();
+                if (!range || range.length === 0) return;
+
+                let r_start = range[0].row[0];
+                let r_end = range[0].row[1];
+                let c_start = range[0].column[0];
+                let c_end = range[0].column[1];
+
+                // 1. CTRL + D: Fill Down
+                if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D')) {{
+                    e.preventDefault();
+                    e.stopPropagation();
+
+                    if (r_start === r_end) {{
+                        // Single row selected: pull from row above
+                        if (r_start > 0) {{
+                            for (let c = c_start; c <= c_end; c++) {{
+                                let topCell = luckysheet.getCellValue(r_start - 1, c, {{ type: 'all' }});
+                                if (topCell) {{
+                                    if (topCell.f) {{
+                                        let newFormula = shiftFormulaRows(topCell.f, 1);
+                                        luckysheet.setCellValue(r_start, c, {{ f: newFormula }});
+                                    }} else {{
+                                        luckysheet.setCellValue(r_start, c, topCell.v !== undefined ? topCell.v : topCell);
+                                    }}
+                                }}
+                            }}
+                        }}
+                    }} else {{
+                        // Range selected: duplicate top row downwards across all rows
+                        for (let c = c_start; c <= c_end; c++) {{
+                            let topCell = luckysheet.getCellValue(r_start, c, {{ type: 'all' }});
+                            if (topCell) {{
+                                for (let r = r_start + 1; r <= r_end; r++) {{
+                                    let rowDelta = r - r_start;
+                                    if (topCell.f) {{
+                                        let newFormula = shiftFormulaRows(topCell.f, rowDelta);
+                                        luckysheet.setCellValue(r, c, {{ f: newFormula }});
+                                    }} else {{
+                                        luckysheet.setCellValue(r, c, topCell.v !== undefined ? topCell.v : topCell);
+                                    }}
+                                }}
+                            }}
+                        }}
+                    }}
+                    return false;
+                }}
+
+                // 2. CTRL + R: Fill Right
+                if ((e.ctrlKey || e.metaKey) && (e.key === 'r' || e.key === 'R')) {{
+                    e.preventDefault();
+                    e.stopPropagation();
+
+                    for (let r = r_start; r <= r_end; r++) {{
+                        let leftCell = luckysheet.getCellValue(r, c_start, {{ type: 'all' }});
+                        if (leftCell) {{
+                            for (let c = c_start + 1; c <= c_end; c++) {{
+                                let colDelta = c - c_start;
+                                if (leftCell.f) {{
+                                    let newFormula = shiftFormulaCols(leftCell.f, colDelta);
+                                    luckysheet.setCellValue(r, c, {{ f: newFormula }});
+                                }} else {{
+                                    luckysheet.setCellValue(r, c, leftCell.v !== undefined ? leftCell.v : leftCell);
+                                }}
+                            }}
+                        }}
+                    }}
+                    return false;
+                }}
+
+                // 3. ALT + = : AutoSum
+                if (e.altKey && (e.key === '=' || e.key === '+')) {{
+                    e.preventDefault();
+                    e.stopPropagation();
+
+                    for (let c = c_start; c <= c_end; c++) {{
+                        let colLetter = String.fromCharCode(65 + c);
+                        let sumStartRow = r_start > 1 ? 2 : 1;
+                        let sumEndRow = r_start;
+                        let autoSumFormula = '=SUM(' + colLetter + sumStartRow + ':' + colLetter + sumEndRow + ')';
+                        luckysheet.setCellValue(r_end, c, {{ f: autoSumFormula }});
+                    }}
+                    return false;
+                }}
+
+                // 4. ALT Sequences: Alt+H+B+A (All Borders), Alt+H+B+N (No Borders)
+                if (e.altKey) {{
+                    altSequence = ['ALT'];
+                    clearTimeout(altTimer);
+                    altTimer = setTimeout(() => {{ altSequence = []; }}, 2000);
+                }} else if (altSequence.length > 0) {{
+                    altSequence.push(e.key.toUpperCase());
+                    let seq = altSequence.join('+');
+
+                    // ALT+H+B+A -> All Borders
+                    if (seq.includes('ALT+H+B+A')) {{
+                        e.preventDefault();
+                        e.stopPropagation();
+                        luckysheet.setCellFormat(r_start, c_start, 'bd', {{
+                            borderType: 'border-all',
+                            style: '1',
+                            color: '#000000'
+                        }}, {{
+                            range: [{{ row: [r_start, r_end], column: [c_start, c_end] }}]
+                        }});
+                        altSequence = [];
+                        return false;
+                    }}
+
+                    // ALT+H+B+N -> Clear Borders
+                    if (seq.includes('ALT+H+B+N')) {{
+                        e.preventDefault();
+                        e.stopPropagation();
+                        luckysheet.setCellFormat(r_start, c_start, 'bd', {{
+                            borderType: 'border-none'
+                        }}, {{
+                            range: [{{ row: [r_start, r_end], column: [c_start, c_end] }}]
+                        }});
+                        altSequence = [];
+                        return false;
+                    }}
+                }}
             }});
         }});
     </script>
