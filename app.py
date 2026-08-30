@@ -1,15 +1,18 @@
 import io
-import json
-import math
 import os
 import re
+import math
+import subprocess
+import platform
 import numpy as np
 import pandas as pd
 import streamlit as st
-import streamlit.components.v1 as components
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 st.set_page_config(
-    page_title="Happi Cashbook Master - Excel 2010",
+    page_title="Happi Cashbook Master - Excel Automation",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -17,29 +20,32 @@ st.set_page_config(
 st.markdown("""
     <style>
     .block-container { 
-        padding-top: 0.5rem !important; 
-        padding-bottom: 0rem !important; 
-        padding-left: 0.8rem !important; 
-        padding-right: 0.8rem !important; 
+        padding-top: 1.2rem !important; 
+        padding-bottom: 1rem !important; 
+        padding-left: 1.5rem !important; 
+        padding-right: 1.5rem !important; 
         max-width: 100% !important;
     }
     #MainMenu {visibility: hidden !important;}
     footer {visibility: hidden !important;}
-    [data-testid="stSidebarCollapseButton"], [data-testid="stSidebarNav"] {
-        visibility: visible !important;
-        display: block !important;
+    .main-card {
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 8px;
+        padding: 24px;
+        margin-bottom: 20px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
     }
     .main-title { 
-        font-size: 18px; 
+        font-size: 22px; 
         font-weight: 700; 
         color: #107c41; 
-        margin-bottom: 4px; 
+        margin-bottom: 6px; 
         display: flex; 
         align-items: center; 
-        gap: 8px; 
+        gap: 10px; 
     }
     .stSidebar { background-color: #f8fafc; }
-    iframe { width: 100% !important; border: 1px solid #cbd5e1 !important; border-radius: 4px; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -106,17 +112,7 @@ HEADERS = [
     "EDITS", "APX SHORTAGE", "(KSP)'Sir's Approvals", "CLOSING BALANCE", "REMARKS"
 ]
 
-@st.cache_resource
-def get_shared_db():
-    return {
-        "branches": sorted(DEFAULT_BRANCHES, key=lambda x: str(x.get("BRANCH", "")).upper()),
-        "entries": {}
-    }
-
-db = get_shared_db()
-all_branches = db["branches"]
-
-SUPPORTED_EXCEL_TYPES = ["xlsx", "xls", "xlsm", "xlsb", "csv"]
+SUPPORTED_TYPES = ["xlsx", "xls", "xlsm", "xlsb", "csv"]
 
 def normalize_key(s):
     if not s: return ""
@@ -129,128 +125,62 @@ def format_excel_formula(num_list):
     if len(clean_ints) == 1: return clean_ints[0]
     return "=" + "+".join(clean_ints)
 
-# --- SIDEBAR ---
+# Session state initialization
+if "dr_balances" not in st.session_state:
+    st.session_state.dr_balances = {}
+if "addins_data" not in st.session_state:
+    st.session_state.addins_data = {}
+
+# --- SIDEBAR CONTROL PANEL ---
 with st.sidebar:
     st.markdown("### 🏢 Happi Control Hub")
     
+    st.markdown("#### 👥 Work Assignment Mode")
     work_mode = st.radio(
-        "Assignment Mode:",
+        "Select Mode:",
         ["👤 Single Cashier (All Stores)", "👥 Two Cashiers (Split 50-50)"],
         label_visibility="collapsed"
     )
 
+    all_branches = sorted(DEFAULT_BRANCHES, key=lambda x: str(x.get("BRANCH", "")).upper())
     selected_branches = all_branches
+    sheet_title = "MASTER CASHBOOK"
+
     if work_mode == "👥 Two Cashiers (Split 50-50)":
         mid_point = math.ceil(len(all_branches) / 2)
         c1_branches = all_branches[:mid_point]
         c2_branches = all_branches[mid_point:]
-        cashier_view = st.selectbox("Current Cashier:", [f"Cashier 1 ({len(c1_branches)} Stores)", f"Cashier 2 ({len(c2_branches)} Stores)"])
-        selected_branches = c1_branches if "Cashier 1" in cashier_view else c2_branches
+        cashier_view = st.selectbox("Current Cashier Sheet:", [f"Cashier 1 ({len(c1_branches)} Stores)", f"Cashier 2 ({len(c2_branches)} Stores)"])
+        if "Cashier 1" in cashier_view:
+            selected_branches = c1_branches
+            sheet_title = "CASHIER 1 CASHBOOK"
+        else:
+            selected_branches = c2_branches
+            sheet_title = "CASHIER 2 CASHBOOK"
 
     st.markdown("---")
     st.markdown("#### 📥 Direct File Ingestion")
     
-    with st.expander("📂 1. Apex Dr Balance File", expanded=False):
-        ho_dump_file = st.file_uploader("Upload Apex File", type=SUPPORTED_EXCEL_TYPES, key="ho_dump")
+    with st.expander("📂 1. Apex Dr Balance File", expanded=True):
+        ho_dump_file = st.file_uploader("Upload Apex Dr Balance", type=SUPPORTED_TYPES, key="ho_dump")
 
-    with st.expander("📥 2. Addins Dump File", expanded=False):
-        addins_dump_file = st.file_uploader("Upload Addins File", type=SUPPORTED_EXCEL_TYPES, key="addins_dump")
-
-    with st.expander("💻 3. Import System Excel Sheet (.xlsm / .xlsx)", expanded=True):
-        master_import_file = st.file_uploader("Upload Local Sheet to Populate", type=SUPPORTED_EXCEL_TYPES, key="local_master_uploader")
+    with st.expander("📥 2. Addins Dump File", expanded=True):
+        addins_dump_file = st.file_uploader("Upload Addins Dump", type=SUPPORTED_TYPES, key="addins_dump")
 
     st.markdown("---")
-    st.markdown("#### ⌨️ Active Excel Shortcuts")
-    st.info("""
-    * **Ctrl + D**: Fill Down (Drag Formula Down)
-    * **Alt + H + B + A**: All Borders
-    * **Alt + H + B + N**: Clear Borders
-    * **Alt + =**: AutoSum Formula
-    * **Ctrl + B / I / U**: Bold, Italic, Underline
-    """)
-
-    if st.button("🧹 Clear & Reset Master Cashbook", use_container_width=True):
-        db["entries"] = {}
+    if st.button("🧹 Clear Ingested Data", use_container_width=True):
+        st.session_state.dr_balances = {}
+        st.session_state.addins_data = {}
         st.rerun()
 
-# 1. Process Master Sheet Import (.xlsm / .xlsx)
-if master_import_file:
-    try:
-        if master_import_file.name.endswith(".csv"):
-            df_raw = pd.read_csv(master_import_file, header=None)
-        else:
-            df_raw = pd.read_excel(master_import_file, header=None)
-
-        header_row_idx = 0
-        for r_idx in range(min(15, len(df_raw))):
-            row_vals = [normalize_key(x) for x in df_raw.iloc[r_idx].dropna()]
-            if any(k in row_vals for k in ["BRANCH", "BRANCHNAME", "STORE", "OPENINGBALANCE", "DENOMINATION"]):
-                header_row_idx = r_idx
-                break
-
-        if master_import_file.name.endswith(".csv"):
-            df_imported = pd.read_csv(master_import_file, skiprows=header_row_idx)
-        else:
-            df_imported = pd.read_excel(master_import_file, skiprows=header_row_idx)
-
-        df_imported.fillna("", inplace=True)
-
-        col_mapping = {}
-        for col in df_imported.columns:
-            c_norm = normalize_key(col)
-            for target_col in HEADERS:
-                if c_norm == normalize_key(target_col) or target_col.upper() in str(col).upper():
-                    col_mapping[col] = target_col
-                    break
-            if "BRANCH" not in col_mapping.values() and any(x in c_norm for x in ["BRANCH", "STORE"]):
-                col_mapping[col] = "BRANCH"
-            if "CODE" not in col_mapping.values() and "CODE" in c_norm:
-                col_mapping[col] = "CODE"
-
-        b_col_actual = None
-        for orig, mapped in col_mapping.items():
-            if mapped == "BRANCH":
-                b_col_actual = orig
-                break
-
-        if b_col_actual is None:
-            b_col_actual = df_imported.columns[2] if len(df_imported.columns) > 2 else df_imported.columns[0]
-
-        imported_count = 0
-        for _, row in df_imported.iterrows():
-            b_val_norm = normalize_key(row[b_col_actual])
-            if not b_val_norm: continue
-
-            matched_branch = None
-            for b in all_branches:
-                if normalize_key(b.get("BRANCH", "")) == b_val_norm or normalize_key(b.get("CODE", "")) == b_val_norm:
-                    matched_branch = b.get("BRANCH", "")
-                    break
-
-            if matched_branch:
-                target_entry = db.setdefault("entries", {}).setdefault(matched_branch, {})
-                for orig_col, cell_val in row.items():
-                    standard_col = col_mapping.get(orig_col, str(orig_col).strip())
-                    if standard_col not in ["SL.No.", "CODE", "BRANCH", "CLOSING BALANCE"]:
-                        val_str = str(cell_val).strip()
-                        if val_str and val_str != "nan":
-                            target_entry[standard_col] = val_str
-                imported_count += 1
-
-        st.sidebar.success(f"✅ Loaded {imported_count} Stores from {master_import_file.name}!")
-    except Exception as e:
-        st.sidebar.error(f"Import Error: {e}")
-
-# 2. Process Apex Dr Dump
+# 1. Process Apex Dump
 if ho_dump_file:
     try:
         df_dump = pd.read_csv(ho_dump_file) if ho_dump_file.name.endswith(".csv") else pd.read_excel(ho_dump_file)
         b_col, a_col = df_dump.columns[0], df_dump.columns[1] if len(df_dump.columns) > 1 else df_dump.columns[0]
         for col in df_dump.columns:
-            if "branch" in str(col).lower() or "store" in str(col).lower():
-                b_col = col
-            if "balance" in str(col).lower() or "opening" in str(col).lower() or "amount" in str(col).lower():
-                a_col = col
+            if "branch" in str(col).lower() or "store" in str(col).lower(): b_col = col
+            if "balance" in str(col).lower() or "opening" in str(col).lower() or "amount" in str(col).lower(): a_col = col
 
         dump_dict = {}
         for _, row in df_dump.iterrows():
@@ -259,24 +189,19 @@ if ho_dump_file:
             if match and b_val:
                 dump_dict[b_val] = int(round(float(match.group(1))))
 
-        for b in all_branches:
-            val = dump_dict.get(normalize_key(b.get("BRANCH", "")), dump_dict.get(normalize_key(b.get("CODE", ""))))
-            if val is not None:
-                db.setdefault("entries", {}).setdefault(b.get("BRANCH", ""), {})["OPENING BALANCE"] = str(val)
-        st.sidebar.success("✅ Apex Dr Balances Synced Globally!")
+        st.session_state.dr_balances = dump_dict
+        st.sidebar.success(f"✅ Loaded {len(dump_dict)} Opening Balances!")
     except Exception as e:
         st.sidebar.error(f"Apex Error: {e}")
 
-# 3. Process Addins Dump
+# 2. Process Addins Dump
 if addins_dump_file:
     try:
         df_addins = pd.read_csv(addins_dump_file) if addins_dump_file.name.endswith(".csv") else pd.read_excel(addins_dump_file)
         b_col, a_col = df_addins.columns[0], df_addins.columns[1] if len(df_addins.columns) > 1 else df_addins.columns[0]
         for col in df_addins.columns:
-            if "branch" in str(col).lower() or "store" in str(col).lower():
-                b_col = col
-            if "amount" in str(col).lower() or "total" in str(col).lower() or "addin" in str(col).lower():
-                a_col = col
+            if "branch" in str(col).lower() or "store" in str(col).lower(): b_col = col
+            if "amount" in str(col).lower() or "total" in str(col).lower() or "addin" in str(col).lower(): a_col = col
 
         addins_dict = {}
         for _, row in df_addins.iterrows():
@@ -287,331 +212,181 @@ if addins_dump_file:
                 if clean_amt > 0:
                     addins_dict.setdefault(b_val, []).append(clean_amt)
 
-        for b in all_branches:
-            vouchers = addins_dict.get(normalize_key(b.get("BRANCH", "")), addins_dict.get(normalize_key(b.get("CODE", "")), []))
-            if vouchers:
-                clean_ints = [str(int(x)) for x in vouchers if x > 0]
-                formula_val = clean_ints[0] if len(clean_ints) == 1 else "=" + "+".join(clean_ints)
-                db.setdefault("entries", {}).setdefault(b.get("BRANCH", ""), {})["AddinGS"] = formula_val
-        st.sidebar.success("✅ Addins Synced Globally!")
+        st.session_state.addins_data = addins_dict
+        st.sidebar.success(f"✅ Loaded {len(addins_dict)} Store Addins!")
     except Exception as e:
         st.sidebar.error(f"Addins Error: {e}")
 
-# Prepare Celldata for Excel 2010
-celldata = []
+# --- BUILD EXCEL 2010 WORKBOOK IN MEMORY ---
+def generate_excel_2010_file(target_branches, title):
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = title
 
-# Header Row: Excel 2010 Classic Dark Green Styling
-for c_idx, h_text in enumerate(HEADERS):
-    celldata.append({
-        "r": 0, "c": c_idx,
-        "v": { "v": h_text, "m": h_text, "bg": "#107c41", "fc": "#ffffff", "bl": 1, "ht": 0, "vt": 0 }
-    })
-
-entries_dict = db.get("entries", {})
-for r_idx, b in enumerate(selected_branches, start=1):
-    b_name = b.get("BRANCH", "")
-    e = entries_dict.get(b_name, {})
-    excel_row_num = r_idx + 1
-    default_closing_formula = f"=D{excel_row_num}-SUM(E{excel_row_num}:N{excel_row_num})"
-
-    row_vals = [
-        str(r_idx),
-        b.get("CODE", ""),
-        b.get("BRANCH", ""),
-        str(e.get("OPENING BALANCE", "")),
-        str(e.get("DEPOSIT", "")),
-        str(e.get("DENOMINATION", "")),
-        str(e.get("AddinGS", "")),
-        str(e.get("PENDING APPRVLS", "")),
-        str(e.get("FINANCE AMNT", "")),
-        str(e.get("SR", "")),
-        str(e.get("SWEEPER SALARY", "")),
-        str(e.get("EDITS", "")),
-        str(e.get("APX SHORTAGE", "")),
-        str(e.get("(KSP)'Sir's Approvals", "")),
-        str(e.get("CLOSING BALANCE", default_closing_formula)),
-        str(e.get("REMARKS", ""))
-    ]
-
-    for c_idx, val in enumerate(row_vals):
-        if val:
-            cell_obj = {"r": r_idx, "c": c_idx, "v": {}}
-            if str(val).startswith("="):
-                cell_obj["v"]["f"] = str(val)
-            else:
-                try:
-                    num = float(str(val).replace(",", ""))
-                    cell_obj["v"]["v"] = int(round(num)) if num.is_integer() else num
-                    cell_obj["v"]["ct"] = {"fa": "General", "t": "n"}
-                except Exception:
-                    cell_obj["v"]["v"] = str(val)
-                    cell_obj["v"]["ct"] = {"fa": "General", "t": "g"}
-            celldata.append(cell_obj)
-
-# Main Workspace Header & Export
-col_head1, col_head2 = st.columns([3.5, 1])
-
-with col_head1:
-    st.markdown(
-        f'<div class="main-title">📊 HAPPI MOBILES - MASTER CASHBOOK (EXCEL 2010 WORKSPACE) '
-        f'<span style="font-size: 13px; color: #107c41; font-weight: bold;">● Active ({len(selected_branches)} Stores)</span></div>',
-        unsafe_allow_html=True
+    # Styles
+    header_fill = PatternFill(start_color="107C41", end_color="107C41", fill_type="solid")
+    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+    data_font = Font(name="Calibri", size=11)
+    bold_font = Font(name="Calibri", size=11, bold=True)
+    
+    thin_border = Border(
+        left=Side(style='thin', color='A0A0A0'),
+        right=Side(style='thin', color='A0A0A0'),
+        top=Side(style='thin', color='A0A0A0'),
+        bottom=Side(style='thin', color='A0A0A0')
     )
 
-with col_head2:
-    export_rows = []
-    for idx, b in enumerate(all_branches, start=1):
-        e = entries_dict.get(b.get("BRANCH", ""), {})
-        excel_row_num = idx + 1
-        export_rows.append({
-            "SL.No.": idx, "CODE": b.get("CODE", ""), "BRANCH": b.get("BRANCH", ""),
-            "OPENING BALANCE": e.get("OPENING BALANCE", ""), "DEPOSIT": e.get("DEPOSIT", ""),
-            "DENOMINATION": e.get("DENOMINATION", ""), "AddinGS": e.get("AddinGS", ""),
-            "PENDING APPRVLS": e.get("PENDING APPRVLS", ""), "FINANCE AMNT": e.get("FINANCE AMNT", ""),
-            "SR": e.get("SR", ""), "SWEEPER SALARY": e.get("SWEEPER SALARY", ""),
-            "EDITS": e.get("EDITS", ""), "APX SHORTAGE": e.get("APX SHORTAGE", ""),
-            "(KSP)'Sir's Approvals": e.get("(KSP)'Sir's Approvals", ""),
-            "CLOSING BALANCE": e.get("CLOSING BALANCE", f"=D{excel_row_num}-SUM(E{excel_row_num}:N{excel_row_num})"),
-            "REMARKS": e.get("REMARKS", "")
-        })
-    df_export = pd.DataFrame(export_rows)
+    # 1. Write Headers (Row 1)
+    for col_idx, header in enumerate(HEADERS, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=header)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.border = thin_border
+    ws.row_dimensions[1].height = 26
+
+    # 2. Write Store Rows
+    dr_map = st.session_state.dr_balances
+    addins_map = st.session_state.addins_data
+
+    for row_idx, b in enumerate(target_branches, start=2):
+        b_name = b.get("BRANCH", "")
+        b_code = b.get("CODE", "")
+        norm_name = normalize_key(b_name)
+        norm_code = normalize_key(b_code)
+
+        # Opening Balance
+        op_val = dr_map.get(norm_name, dr_map.get(norm_code, ""))
+
+        # Addins Formula
+        vouchers = addins_map.get(norm_name, addins_map.get(norm_code, []))
+        addin_val = format_excel_formula(vouchers) if vouchers else ""
+
+        # Closing Balance Formula: =D2-SUM(E2:N2)
+        closing_formula = f"=D{row_idx}-SUM(E{row_idx}:N{row_idx})"
+
+        row_values = [
+            row_idx - 1,      # A: SL.No.
+            b_code,           # B: CODE
+            b_name,           # C: BRANCH
+            op_val,           # D: OPENING BALANCE
+            "",               # E: DEPOSIT
+            "",               # F: DENOMINATION
+            addin_val,        # G: AddinGS
+            "",               # H: PENDING APPRVLS
+            "",               # I: FINANCE AMNT
+            "",               # J: SR
+            "",               # K: SWEEPER SALARY
+            "",               # L: EDITS
+            "",               # M: APX SHORTAGE
+            "",               # N: (KSP)'Sir's Approvals
+            closing_formula,  # O: CLOSING BALANCE
+            ""                # P: REMARKS
+        ]
+
+        for col_idx, val in enumerate(row_values, start=1):
+            cell = ws.cell(row=row_idx, column=col_idx)
+            if str(val).startswith("="):
+                cell.value = str(val)
+            elif isinstance(val, (int, float)):
+                cell.value = val
+                cell.number_format = '#,##0'
+            else:
+                cell.value = val
+
+            cell.font = bold_font if col_idx in [1, 2, 3, 15] else data_font
+            cell.alignment = Alignment(horizontal="center" if col_idx in [1, 2] else "left" if col_idx in [3, 16] else "right", vertical="center")
+            cell.border = thin_border
+
+        ws.row_dimensions[row_idx].height = 20
+
+    # Auto-adjust column widths
+    column_widths = {
+        1: 8, 2: 12, 3: 24, 4: 20, 5: 14, 6: 16, 7: 16, 8: 18,
+        9: 16, 10: 14, 11: 18, 12: 14, 13: 16, 14: 22, 15: 20, 16: 22
+    }
+    for col_idx, width in column_widths.items():
+        ws.column_dimensions[get_column_letter(col_idx)].width = width
+
+    # Save to BytesIO
     output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_export.to_excel(writer, index=False, sheet_name='MASTER REPORT')
+    wb.save(output)
+    return output.getvalue()
+
+# Generate Excel Binary
+excel_data = generate_excel_2010_file(selected_branches, sheet_title)
+file_name = f"{sheet_title.replace(' ', '_')}_2010.xlsx"
+
+# Function to launch directly into desktop MS Excel
+def open_in_desktop_excel(data, fname):
+    local_path = os.path.abspath(fname)
+    with open(local_path, "wb") as f:
+        f.write(data)
+    
+    current_os = platform.system()
+    if current_os == "Windows":
+        os.startfile(local_path)
+    elif current_os == "Darwin":
+        subprocess.call(["open", local_path])
+    else:
+        subprocess.call(["xdg-open", local_path])
+
+# --- MAIN PAGE DISPLAY ---
+st.markdown(f'<div class="main-title">📊 HAPPI MOBILES - DESKTOP EXCEL 2010 WORKSPACE</div>', unsafe_allow_html=True)
+
+st.markdown(f"""
+<div class="main-card">
+    <h4 style="margin-top: 0; color: #1e293b;">⚡ Master Sheet Ready ({len(selected_branches)} Stores Active)</h4>
+    <p style="color: #64748b; font-size: 14px; margin-bottom: 20px;">
+        All Apex Dr Balances, Addins formulas, and Closing Balance calculations (<code>=D2-SUM(E2:N2)</code>) have been processed.
+        Click below to launch directly into your native <b>Microsoft Excel 2010</b> software with full keyboard shortcut support (<code>Ctrl+D</code>, <code>Alt+HBA</code>, <code>Alt+=</code>).
+    </p>
+</div>
+""", unsafe_allow_html=True)
+
+col_act1, col_act2 = st.columns(2)
+
+with col_act1:
+    if st.button("🚀 Open Directly in Desktop Excel 2010", type="primary", use_container_width=True):
+        try:
+            open_in_desktop_excel(excel_data, file_name)
+            st.success(f"✅ Launched {file_name} in Microsoft Excel 2010!")
+        except Exception as e:
+            st.info("💡 Running on Cloud: Please use the Download button on the right to open directly in your Excel 2010.")
+
+with col_act2:
     st.download_button(
-        label="📥 Download Master Excel",
-        data=output.getvalue(),
-        file_name="HO_MASTER_CASHBOOK_2010.xlsx",
+        label="📥 Download & Open Excel 2010 File",
+        data=excel_data,
+        file_name=file_name,
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
 
-# Full Excel 2010 Native Spreadsheet Engine with Bulletproof Shortcut Handlers & Action Toolbar
-excel_2010_html = f"""
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="utf-8" />
-    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/plugins/css/pluginsCss.css' />
-    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/plugins/plugins.css' />
-    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/css/luckysheet.css' />
-    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/assets/iconfont/iconfont.css' />
-    <script src="https://cdn.jsdelivr.net/npm/luckysheet/dist/plugins/js/plugin.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/luckysheet/dist/luckysheet.umd.js"></script>
-    <style>
-        html, body {{ margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; font-family: 'Segoe UI', Calibri, Arial, sans-serif; }}
-        #excel_header_bar {{
-            height: 34px;
-            background: #f3f3f3;
-            border-bottom: 1px solid #d4d4d4;
-            display: flex;
-            align-items: center;
-            padding: 0 10px;
-            gap: 8px;
-            font-size: 13px;
-        }}
-        .excel-btn {{
-            background: #ffffff;
-            border: 1px solid #c0c0c0;
-            border-radius: 3px;
-            padding: 3px 8px;
-            cursor: pointer;
-            font-weight: 600;
-            color: #333;
-            display: flex;
-            align-items: center;
-            gap: 4px;
-        }}
-        .excel-btn:hover {{ background: #e1dfdd; }}
-        #luckysheet {{ margin: 0px; padding: 0px; position: absolute; width: 100%; height: calc(100% - 34px); left: 0px; top: 34px; }}
-    </style>
-</head>
-<body>
-    <div id="excel_header_bar">
-        <span style="font-weight: bold; color: #107c41;">⚡ Excel 2010 Actions:</span>
-        <button class="excel-btn" id="btn_fill_down" title="Shortcut: Ctrl + D">⬇️ Fill Down (Ctrl+D)</button>
-        <button class="excel-btn" id="btn_all_borders" title="Shortcut: Alt + H + B + A">田 All Borders (Alt+HBA)</button>
-        <button class="excel-btn" id="btn_clear_borders" title="Shortcut: Alt + H + B + N">⬜ No Borders</button>
-        <button class="excel-btn" id="btn_autosum" title="Shortcut: Alt + =">Σ AutoSum (Alt+=)</button>
-    </div>
+st.markdown("---")
+st.markdown("#### 📋 Live Preview of Mapped Data")
 
-    <div id="luckysheet"></div>
+preview_rows = []
+dr_map = st.session_state.dr_balances
+addins_map = st.session_state.addins_data
 
-    <script>
-        $(function () {{
-            luckysheet.create({{
-                container: 'luckysheet',
-                showinfobar: false,
-                showsheetbar: false,
-                showstatisticBar: true,
-                enableAddRow: false,
-                enableAddBackTop: false,
-                data: [{{
-                    "name": "MASTER REPORT",
-                    "status": 1,
-                    "order": 0,
-                    "data": [],
-                    "config": {{
-                        "columnlen": {{
-                            "0": 55, "1": 75, "2": 150, "3": 130, "4": 90, "5": 110,
-                            "6": 100, "7": 130, "8": 110, "9": 90, "10": 120, "11": 90,
-                            "12": 110, "13": 140, "14": 130, "15": 120
-                        }}
-                    }},
-                    "celldata": {json.dumps(celldata)},
-                    "row": {len(selected_branches) + 5},
-                    "column": 18
-                }}]
-            }});
+for idx, b in enumerate(selected_branches, start=1):
+    b_name = b.get("BRANCH", "")
+    b_code = b.get("CODE", "")
+    norm_name = normalize_key(b_name)
+    norm_code = normalize_key(b_code)
+    
+    op_val = dr_map.get(norm_name, dr_map.get(norm_code, ""))
+    vouchers = addins_map.get(norm_name, addins_map.get(norm_code, []))
+    addin_val = format_excel_formula(vouchers) if vouchers else ""
+    
+    preview_rows.append({
+        "SL.No.": idx,
+        "CODE": b_code,
+        "BRANCH": b_name,
+        "OPENING BALANCE": op_val,
+        "AddinGS": addin_val,
+        "CLOSING BALANCE FORMULA": f"=D{idx+1}-SUM(E{idx+1}:N{idx+1})"
+    })
 
-            function shiftFormulaRows(formulaStr, rowDelta) {{
-                return formulaStr.replace(/([A-Za-z]+)(\\d+)/g, function(match, col, row) {{
-                    let newRow = parseInt(row, 10) + rowDelta;
-                    return col + newRow;
-                }});
-            }}
-
-            function executeFillDown() {{
-                let range = luckysheet.getRange();
-                if (!range || range.length === 0) return;
-
-                let r_start = range[0].row[0];
-                let r_end = range[0].row[1];
-                let c_start = range[0].column[0];
-                let c_end = range[0].column[1];
-
-                if (r_start === r_end && r_start > 0) {{
-                    for (let c = c_start; c <= c_end; c++) {{
-                        let topCell = luckysheet.getCellValue(r_start - 1, c, {{ type: 'all' }});
-                        if (topCell) {{
-                            if (topCell.f) {{
-                                luckysheet.setCellValue(r_start, c, {{ f: shiftFormulaRows(topCell.f, 1) }});
-                            }} else {{
-                                luckysheet.setCellValue(r_start, c, topCell.v !== undefined ? topCell.v : topCell);
-                            }}
-                        }}
-                    }}
-                }} else if (r_end > r_start) {{
-                    for (let c = c_start; c <= c_end; c++) {{
-                        let topCell = luckysheet.getCellValue(r_start, c, {{ type: 'all' }});
-                        if (topCell) {{
-                            for (let r = r_start + 1; r <= r_end; r++) {{
-                                let delta = r - r_start;
-                                if (topCell.f) {{
-                                    luckysheet.setCellValue(r, c, {{ f: shiftFormulaRows(topCell.f, delta) }});
-                                }} else {{
-                                    luckysheet.setCellValue(r, c, topCell.v !== undefined ? topCell.v : topCell);
-                                }}
-                            }}
-                        }}
-                    }}
-                }}
-                luckysheet.refresh();
-            }}
-
-            function executeAllBorders() {{
-                let range = luckysheet.getRange();
-                if (!range || range.length === 0) return;
-                let r_start = range[0].row[0];
-                let r_end = range[0].row[1];
-                let c_start = range[0].column[0];
-                let c_end = range[0].column[1];
-
-                luckysheet.setCellFormat(r_start, c_start, 'bd', {{
-                    borderType: 'border-all',
-                    style: '1',
-                    color: '#000000'
-                }}, {{
-                    range: [{{ row: [r_start, r_end], column: [c_start, c_end] }}]
-                }});
-            }}
-
-            function executeClearBorders() {{
-                let range = luckysheet.getRange();
-                if (!range || range.length === 0) return;
-                let r_start = range[0].row[0];
-                let r_end = range[0].row[1];
-                let c_start = range[0].column[0];
-                let c_end = range[0].column[1];
-
-                luckysheet.setCellFormat(r_start, c_start, 'bd', {{
-                    borderType: 'border-none'
-                }}, {{
-                    range: [{{ row: [r_start, r_end], column: [c_start, c_end] }}]
-                }});
-            }}
-
-            function executeAutoSum() {{
-                let range = luckysheet.getRange();
-                if (!range || range.length === 0) return;
-                let r_start = range[0].row[0];
-                let r_end = range[0].row[1];
-                let c_start = range[0].column[0];
-                let c_end = range[0].column[1];
-
-                for (let c = c_start; c <= c_end; c++) {{
-                    let colLetter = String.fromCharCode(65 + c);
-                    let autoSum = '=SUM(' + colLetter + '2:' + colLetter + r_end + ')';
-                    luckysheet.setCellValue(r_end + 1, c, {{ f: autoSum }});
-                }}
-                luckysheet.refresh();
-            }}
-
-            // Attach Direct Click Handlers
-            $('#btn_fill_down').on('click', executeFillDown);
-            $('#btn_all_borders').on('click', executeAllBorders);
-            $('#btn_clear_borders').on('click', executeClearBorders);
-            $('#btn_autosum').on('click', executeAutoSum);
-
-            // Global Keystroke Listener for Hotkeys
-            let keySeq = [];
-            let keyTimer = null;
-
-            window.addEventListener('keydown', function(e) {{
-                // 1. Ctrl + D
-                if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D' || e.keyCode === 68)) {{
-                    e.preventDefault();
-                    e.stopPropagation();
-                    executeFillDown();
-                    return false;
-                }}
-
-                // 2. Alt + =
-                if (e.altKey && (e.key === '=' || e.key === '+' || e.keyCode === 187)) {{
-                    e.preventDefault();
-                    e.stopPropagation();
-                    executeAutoSum();
-                    return false;
-                }}
-
-                // 3. Alt Sequence: Alt -> H -> B -> A
-                if (e.altKey) {{
-                    keySeq = ['ALT'];
-                    clearTimeout(keyTimer);
-                    keyTimer = setTimeout(() => {{ keySeq = []; }}, 2500);
-                }} else if (keySeq.length > 0) {{
-                    keySeq.push(e.key.toUpperCase());
-                    let seqStr = keySeq.join('');
-                    if (seqStr.includes('ALTHBA')) {{
-                        e.preventDefault();
-                        e.stopPropagation();
-                        executeAllBorders();
-                        keySeq = [];
-                        return false;
-                    }}
-                    if (seqStr.includes('ALTHBN')) {{
-                        e.preventDefault();
-                        e.stopPropagation();
-                        executeClearBorders();
-                        keySeq = [];
-                        return false;
-                    }}
-                }}
-            }}, true);
-        }});
-    </script>
-</body>
-</html>
-"""
-
-components.html(excel_2010_html, height=860)
+st.dataframe(pd.DataFrame(preview_rows), use_container_width=True, height=450)
