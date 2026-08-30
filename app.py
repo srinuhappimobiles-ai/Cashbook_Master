@@ -110,6 +110,8 @@ def get_shared_db():
 db = get_shared_db()
 all_branches = db["branches"]
 
+SUPPORTED_EXCEL_TYPES = ["xlsx", "xls", "xlsm", "xlsb", "csv"]
+
 def format_excel_formula(num_list):
     if not num_list: return ""
     clean_ints = [str(int(x)) for x in num_list if x > 0]
@@ -162,13 +164,13 @@ with st.sidebar:
     st.markdown("#### 📥 Direct File Ingestion")
     
     with st.expander("📂 1. Apex Dr Balance File", expanded=False):
-        ho_dump_file = st.file_uploader("Upload Apex File", type=["xlsx", "xls", "csv"], key="ho_dump")
+        ho_dump_file = st.file_uploader("Upload Apex File", type=SUPPORTED_EXCEL_TYPES, key="ho_dump")
 
     with st.expander("📥 2. Addins Dump File", expanded=False):
-        addins_dump_file = st.file_uploader("Upload Addins File", type=["xlsx", "xls", "csv"], key="addins_dump")
+        addins_dump_file = st.file_uploader("Upload Addins File", type=SUPPORTED_EXCEL_TYPES, key="addins_dump")
 
-    with st.expander("💻 3. Import System Excel Sheet", expanded=False):
-        master_import_file = st.file_uploader("Upload Local Sheet to Populate", type=["xlsx", "xls", "csv"], key="local_master_uploader")
+    with st.expander("💻 3. Import System Excel Sheet", expanded=True):
+        master_import_file = st.file_uploader("Upload Local Sheet to Populate", type=SUPPORTED_EXCEL_TYPES, key="local_master_uploader")
 
     st.markdown("---")
     st.markdown("#### ⚙️ Data Actions")
@@ -231,16 +233,26 @@ if master_import_file:
     try:
         df_imported = pd.read_csv(master_import_file) if master_import_file.name.endswith(".csv") else pd.read_excel(master_import_file)
         df_imported.fillna("", inplace=True)
-        b_col = "BRANCH" if "BRANCH" in df_imported.columns else df_imported.columns[2]
+        
+        # Detect Branch Column
+        b_col = None
+        for col in df_imported.columns:
+            if "branch" in str(col).lower() or "store" in str(col).lower():
+                b_col = col
+                break
+        if b_col is None:
+            b_col = df_imported.columns[2] if len(df_imported.columns) > 2 else df_imported.columns[0]
         
         for _, row in df_imported.iterrows():
             b_name = str(row[b_col]).strip().upper()
             target_entry = db.setdefault("entries", {}).setdefault(b_name, {})
             for col in df_imported.columns:
-                if col not in ["Sl.No.", "SL.No.", "CODE", "BRANCH", "CLOSING BALANCE"]:
-                    if str(row[col]).strip() != "":
-                        target_entry[col] = str(row[col]).strip()
-        st.sidebar.success("✅ Custom Local Master Excel Imported!")
+                col_clean = str(col).strip()
+                if col_clean not in ["Sl.No.", "SL.No.", "CODE", "BRANCH", "CLOSING BALANCE"]:
+                    val_str = str(row[col]).strip()
+                    if val_str != "" and val_str != "nan":
+                        target_entry[col_clean] = val_str
+        st.sidebar.success("✅ File Loaded & Populated Successfully!")
     except Exception as e:
         st.sidebar.error(f"Import Error: {e}")
 
