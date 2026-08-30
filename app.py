@@ -6,6 +6,7 @@ import re
 import numpy as np
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 
 st.set_page_config(
     page_title="Happi Cashbook Master",
@@ -16,10 +17,10 @@ st.set_page_config(
 st.markdown("""
     <style>
     .block-container { 
-        padding-top: 1rem !important; 
+        padding-top: 0.5rem !important; 
         padding-bottom: 0rem !important; 
-        padding-left: 1rem !important; 
-        padding-right: 1rem !important; 
+        padding-left: 0.8rem !important; 
+        padding-right: 0.8rem !important; 
         max-width: 100% !important;
     }
     #MainMenu {visibility: hidden !important;}
@@ -38,10 +39,10 @@ st.markdown("""
         gap: 8px; 
     }
     .stSidebar { background-color: #f8fafc; }
+    iframe { width: 100% !important; border: 1px solid #cbd5e1 !important; border-radius: 4px; }
     </style>
 """, unsafe_allow_html=True)
 
-# 107 Standard Branch Definitions
 DEFAULT_BRANCHES = [
     {"CODE": "ADBD", "BRANCH": "ADILABAD"}, {"CODE": "AMP", "BRANCH": "AMALAPURAM"},
     {"CODE": "AMPT", "BRANCH": "AMEERPET"}, {"CODE": "ANTP", "BRANCH": "ANANTAPUR"},
@@ -99,7 +100,12 @@ DEFAULT_BRANCHES = [
     {"CODE": "ZB", "BRANCH": "ZAHEERABAD"}
 ]
 
-# Shared Global Database across all browser tabs
+HEADERS = [
+    "SL.No.", "CODE", "BRANCH", "OPENING BALANCE", "DEPOSIT", "DENOMINATION", 
+    "AddinGS", "PENDING APPRVLS", "FINANCE AMNT", "SR", "SWEEPER SALARY", 
+    "EDITS", "APX SHORTAGE", "(KSP)'Sir's Approvals", "CLOSING BALANCE", "REMARKS"
+]
+
 @st.cache_resource
 def get_shared_db():
     return {
@@ -112,6 +118,10 @@ all_branches = db["branches"]
 
 SUPPORTED_EXCEL_TYPES = ["xlsx", "xls", "xlsm", "xlsb", "csv"]
 
+def normalize_key(s):
+    if not s: return ""
+    return re.sub(r"[^A-Za-z0-9]", "", str(s)).upper()
+
 def format_excel_formula(num_list):
     if not num_list: return ""
     clean_ints = [str(int(x)) for x in num_list if x > 0]
@@ -119,33 +129,10 @@ def format_excel_formula(num_list):
     if len(clean_ints) == 1: return clean_ints[0]
     return "=" + "+".join(clean_ints)
 
-def normalize_name(s):
-    if not s: return ""
-    return re.sub(r"[^A-Za-z0-9]", "", str(s)).upper()
-
-def evaluate_val(val):
-    if val is None or pd.isna(val):
-        return 0.0
-    s = str(val).strip()
-    if not s:
-        return 0.0
-    if s.startswith("="):
-        expr = s[1:]
-        try:
-            if re.match(r"^[0-9+\-*/().\s]+$", expr):
-                return float(eval(expr))
-        except:
-            return 0.0
-    try:
-        return float(s.replace(",", ""))
-    except:
-        return 0.0
-
-# --- SIDEBAR CONTROL PANEL ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.markdown("### 🏢 Happi Control Hub")
     
-    st.markdown("#### 👥 Work Mode")
     work_mode = st.radio(
         "Assignment Mode:",
         ["👤 Single Cashier (All Stores)", "👥 Two Cashiers (Split 50-50)"],
@@ -169,7 +156,7 @@ with st.sidebar:
     with st.expander("📥 2. Addins Dump File", expanded=False):
         addins_dump_file = st.file_uploader("Upload Addins File", type=SUPPORTED_EXCEL_TYPES, key="addins_dump")
 
-    with st.expander("💻 3. Import System Excel Sheet", expanded=True):
+    with st.expander("💻 3. Import System Excel Sheet (.xlsm / .xlsx)", expanded=True):
         master_import_file = st.file_uploader("Upload Local Sheet to Populate", type=SUPPORTED_EXCEL_TYPES, key="local_master_uploader")
 
     st.markdown("---")
@@ -178,7 +165,78 @@ with st.sidebar:
         db["entries"] = {}
         st.rerun()
 
-# Process Ingestions directly into Global Server State
+# 1. Process Master Sheet Import with Robust Column Detection
+if master_import_file:
+    try:
+        if master_import_file.name.endswith(".csv"):
+            df_raw = pd.read_csv(master_import_file, header=None)
+        else:
+            df_raw = pd.read_excel(master_import_file, header=None)
+
+        # Detect Header Row dynamically
+        header_row_idx = 0
+        for r_idx in range(min(15, len(df_raw))):
+            row_vals = [normalize_key(x) for x in df_raw.iloc[r_idx].dropna()]
+            if any(k in row_vals for k in ["BRANCH", "BRANCHNAME", "STORE", "OPENINGBALANCE", "DENOMINATION"]):
+                header_row_idx = r_idx
+                break
+
+        if master_import_file.name.endswith(".csv"):
+            df_imported = pd.read_csv(master_import_file, skiprows=header_row_idx)
+        else:
+            df_imported = pd.read_excel(master_import_file, skiprows=header_row_idx)
+
+        df_imported.fillna("", inplace=True)
+
+        # Match columns against canonical names
+        col_mapping = {}
+        for col in df_imported.columns:
+            c_norm = normalize_key(col)
+            for target_col in HEADERS:
+                if c_norm == normalize_key(target_col) or target_col.upper() in str(col).upper():
+                    col_mapping[col] = target_col
+                    break
+            if "BRANCH" not in col_mapping.values() and any(x in c_norm for x in ["BRANCH", "STORE"]):
+                col_mapping[col] = "BRANCH"
+            if "CODE" not in col_mapping.values() and "CODE" in c_norm:
+                col_mapping[col] = "CODE"
+
+        b_col_actual = None
+        for orig, mapped in col_mapping.items():
+            if mapped == "BRANCH":
+                b_col_actual = orig
+                break
+
+        if b_col_actual is None:
+            b_col_actual = df_imported.columns[2] if len(df_imported.columns) > 2 else df_imported.columns[0]
+
+        imported_count = 0
+        for _, row in df_imported.iterrows():
+            b_val_norm = normalize_key(row[b_col_actual])
+            if not b_val_norm: continue
+
+            # Match to standard store name
+            matched_branch = None
+            for b in all_branches:
+                if normalize_key(b["BRANCH"]) == b_val_norm or normalize_key(b["CODE"]) == b_val_norm:
+                    matched_branch = b["BRANCH"]
+                    break
+
+            if matched_branch:
+                target_entry = db.setdefault("entries", {}).setdefault(matched_branch, {})
+                for orig_col, cell_val in row.items():
+                    standard_col = col_mapping.get(orig_col, str(orig_col).strip())
+                    if standard_col not in ["SL.No.", "CODE", "BRANCH", "CLOSING BALANCE"]:
+                        val_str = str(cell_val).strip()
+                        if val_str and val_str != "nan":
+                            target_entry[standard_col] = val_str
+                imported_count += 1
+
+        st.sidebar.success(f"✅ Loaded {imported_count} Stores from {master_import_file.name}!")
+    except Exception as e:
+        st.sidebar.error(f"Import Error: {e}")
+
+# 2. Process Apex Dr Dump
 if ho_dump_file:
     try:
         df_dump = pd.read_csv(ho_dump_file) if ho_dump_file.name.endswith(".csv") else pd.read_excel(ho_dump_file)
@@ -189,19 +247,20 @@ if ho_dump_file:
 
         dump_dict = {}
         for _, row in df_dump.iterrows():
-            b_val, raw_amt = normalize_name(row[b_col]), str(row[a_col]).replace(",", "").strip()
+            b_val, raw_amt = normalize_key(row[b_col]), str(row[a_col]).replace(",", "").strip()
             match = re.search(r"(\d+\.?\d*)", raw_amt)
             if match and b_val:
                 dump_dict[b_val] = int(round(float(match.group(1))))
 
         for b in all_branches:
-            val = dump_dict.get(normalize_name(b["BRANCH"]), dump_dict.get(normalize_name(b["CODE"])))
+            val = dump_dict.get(normalize_key(b["BRANCH"]), dump_dict.get(normalize_key(b["CODE"])))
             if val is not None:
                 db.setdefault("entries", {}).setdefault(b["BRANCH"], {})["OPENING BALANCE"] = str(val)
         st.sidebar.success("✅ Apex Dr Balances Synced Globally!")
     except Exception as e:
         st.sidebar.error(f"Apex Error: {e}")
 
+# 3. Process Addins Dump
 if addins_dump_file:
     try:
         df_addins = pd.read_csv(addins_dump_file) if addins_dump_file.name.endswith(".csv") else pd.read_excel(addins_dump_file)
@@ -212,7 +271,7 @@ if addins_dump_file:
 
         addins_dict = {}
         for _, row in df_addins.iterrows():
-            b_val, raw_amt = normalize_name(row[b_col]), str(row[a_col]).replace(",", "").strip()
+            b_val, raw_amt = normalize_key(row[b_col]), str(row[a_col]).replace(",", "").strip()
             match = re.search(r"(\d+\.?\d*)", raw_amt)
             if match and b_val:
                 clean_amt = int(round(float(match.group(1))))
@@ -220,95 +279,66 @@ if addins_dump_file:
                     addins_dict.setdefault(b_val, []).append(clean_amt)
 
         for b in all_branches:
-            vouchers = addins_dict.get(normalize_name(b["BRANCH"]), addins_dict.get(normalize_name(b["CODE"]), []))
+            vouchers = addins_dict.get(normalize_key(b["BRANCH"]), addins_dict.get(normalize_key(b["CODE"]), []))
             if vouchers:
-                clean_ints = [str(int(x)) for x in vouchers if x > 0]
-                formula_val = clean_ints[0] if len(clean_ints) == 1 else "=" + "+".join(clean_ints)
-                db.setdefault("entries", {}).setdefault(b["BRANCH"], {})["AddinGS"] = formula_val
+                db.setdefault("entries", {}).setdefault(b["BRANCH"], {})["AddinGS"] = format_excel_formula(vouchers)
         st.sidebar.success("✅ Addins Synced Globally!")
     except Exception as e:
         st.sidebar.error(f"Addins Error: {e}")
 
-if master_import_file:
-    try:
-        df_imported = pd.read_csv(master_import_file) if master_import_file.name.endswith(".csv") else pd.read_excel(master_import_file)
-        df_imported.fillna("", inplace=True)
-        
-        # Detect Branch Column
-        b_col = None
-        for col in df_imported.columns:
-            if "branch" in str(col).lower() or "store" in str(col).lower():
-                b_col = col
-                break
-        if b_col is None:
-            b_col = df_imported.columns[2] if len(df_imported.columns) > 2 else df_imported.columns[0]
-        
-        for _, row in df_imported.iterrows():
-            b_name = str(row[b_col]).strip().upper()
-            target_entry = db.setdefault("entries", {}).setdefault(b_name, {})
-            for col in df_imported.columns:
-                col_clean = str(col).strip()
-                if col_clean not in ["Sl.No.", "SL.No.", "CODE", "BRANCH", "CLOSING BALANCE"]:
-                    val_str = str(row[col]).strip()
-                    if val_str != "" and val_str != "nan":
-                        target_entry[col_clean] = val_str
-        st.sidebar.success("✅ File Loaded & Populated Successfully!")
-    except Exception as e:
-        st.sidebar.error(f"Import Error: {e}")
+# Prepare Complete Celldata for Excel 2010 Grid
+celldata = []
 
-# Build Real-time DataFrame with Auto Closing Calculation
-data_matrix = []
-entries_dict = db.get("entries", {})
-
-for idx, b in enumerate(selected_branches, start=1):
-    b_name = b["BRANCH"]
-    e = entries_dict.get(b_name, {})
-
-    op_bal = e.get("OPENING BALANCE", "")
-    dep = e.get("DEPOSIT", "")
-    den = e.get("DENOMINATION", "")
-    addin = e.get("AddinGS", "")
-    pend = e.get("PENDING APPRVLS", "")
-    fin = e.get("FINANCE AMNT", "")
-    sr = e.get("SR", "")
-    swp = e.get("SWEEPER SALARY", "")
-    edt = e.get("EDITS", "")
-    apx_sh = e.get("APX SHORTAGE", "")
-    ksp = e.get("(KSP)'Sir's Approvals", "")
-    rem = e.get("REMARKS", "")
-
-    total_deductions = sum([
-        evaluate_val(dep), evaluate_val(den), evaluate_val(addin),
-        evaluate_val(pend), evaluate_val(fin), evaluate_val(sr),
-        evaluate_val(swp), evaluate_val(edt), evaluate_val(apx_sh),
-        evaluate_val(ksp)
-    ])
-    
-    closing_val = evaluate_val(op_bal) - total_deductions
-    closing_display = str(int(round(closing_val))) if op_bal != "" else ""
-
-    data_matrix.append({
-        "Sl.No.": idx,
-        "CODE": b["CODE"],
-        "BRANCH": b["BRANCH"],
-        "OPENING BALANCE": op_bal,
-        "DEPOSIT": dep,
-        "DENOMINATION": den,
-        "AddinGS": addin,
-        "PENDING APPRVLS": pend,
-        "FINANCE AMNT": fin,
-        "SR": sr,
-        "SWEEPER SALARY": swp,
-        "EDITS": edt,
-        "APX SHORTAGE": apx_sh,
-        "(KSP)'Sir's Approvals": ksp,
-        "CLOSING BALANCE": closing_display,
-        "REMARKS": rem
+# Row 0: Excel 2010 Classic Teal Header
+for c_idx, h_text in enumerate(HEADERS):
+    celldata.append({
+        "r": 0, "c": c_idx,
+        "v": { "v": h_text, "m": h_text, "bg": "#1e7082", "fc": "#ffffff", "bl": 1, "ht": 0, "vt": 0 }
     })
 
-df_active = pd.DataFrame(data_matrix)
+# Rows 1 to N: Store Data & Formulas
+entries_dict = db.get("entries", {})
+for r_idx, b in enumerate(selected_branches, start=1):
+    b_name = b["BRANCH"]
+    e = entries_dict.get(b_name, {})
+    excel_row_num = r_idx + 1
+    default_closing_formula = f"=D{excel_row_num}-SUM(E{excel_row_num}:N{excel_row_num})"
 
-# Header & Download
+    row_vals = [
+        str(r_idx),
+        b["CODE"],
+        b["BRANCH"],
+        str(e.get("OPENING BALANCE", "")),
+        str(e.get("DEPOSIT", "")),
+        str(e.get("DENOMINATION", "")),
+        str(e.get("AddinGS", "")),
+        str(e.get("PENDING APPRVLS", "")),
+        str(e.get("FINANCE AMNT", "")),
+        str(e.get("SR", "")),
+        str(e.get("SWEEPER SALARY", "")),
+        str(e.get("EDITS", "")),
+        str(e.get("APX SHORTAGE", "")),
+        str(e.get("(KSP)'Sir's Approvals", "")),
+        str(e.get("CLOSING BALANCE", default_closing_formula)),
+        str(e.get("REMARKS", ""))
+    ]
+
+    for c_idx, val in enumerate(row_vals):
+        if val:
+            cell_obj = {"r": r_idx, "c": c_idx, "v": {}}
+            if str(val).startswith("="):
+                cell_obj["v"]["f"] = str(val)
+            else:
+                try:
+                    num = float(str(val).replace(",", ""))
+                    cell_obj["v"]["v"] = int(round(num)) if num.is_integer() else num
+                    cell_obj["v"]["ct"] = {"fa": "General", "t": "n"}
+                except:
+                    cell_obj["v"]["v"] = str(val)
+                    cell_obj["v"]["ct"] = {"fa": "General", "t": "g"}
+            celldata.append(cell_obj)
+
+# Main Workspace Header
 col_head1, col_head2 = st.columns([3.5, 1])
 
 with col_head1:
@@ -319,9 +349,25 @@ with col_head1:
     )
 
 with col_head2:
+    export_rows = []
+    for idx, b in enumerate(all_branches, start=1):
+        e = entries_dict.get(b["BRANCH"], {})
+        excel_row_num = idx + 1
+        export_rows.append({
+            "SL.No.": idx, "CODE": b["CODE"], "BRANCH": b["BRANCH"],
+            "OPENING BALANCE": e.get("OPENING BALANCE", ""), "DEPOSIT": e.get("DEPOSIT", ""),
+            "DENOMINATION": e.get("DENOMINATION", ""), "AddinGS": e.get("AddinGS", ""),
+            "PENDING APPRVLS": e.get("PENDING APPRVLS", ""), "FINANCE AMNT": e.get("FINANCE AMNT", ""),
+            "SR": e.get("SR", ""), "SWEEPER SALARY": e.get("SWEEPER SALARY", ""),
+            "EDITS": e.get("EDITS", ""), "APX SHORTAGE": e.get("APX SHORTAGE", ""),
+            "(KSP)'Sir's Approvals": e.get("(KSP)'Sir's Approvals", ""),
+            "CLOSING BALANCE": e.get("CLOSING BALANCE", f"=D{excel_row_num}-SUM(E{excel_row_num}:N{excel_row_num})"),
+            "REMARKS": e.get("REMARKS", "")
+        })
+    df_export = pd.DataFrame(export_rows)
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df_active.to_excel(writer, index=False, sheet_name='MASTER REPORT')
+        df_export.to_excel(writer, index=False, sheet_name='MASTER REPORT')
     st.download_button(
         label="📥 Download Master Excel",
         data=output.getvalue(),
@@ -330,36 +376,55 @@ with col_head2:
         use_container_width=True
     )
 
-# Editable Data Grid
-column_config = {
-    col: st.column_config.TextColumn(col) for col in [
-        "OPENING BALANCE", "DEPOSIT", "DENOMINATION", "AddinGS", "PENDING APPRVLS",
-        "FINANCE AMNT", "SR", "SWEEPER SALARY", "EDITS", "APX SHORTAGE",
-        "(KSP)'Sir's Approvals", "REMARKS"
-    ]
-}
-column_config["CLOSING BALANCE"] = st.column_config.TextColumn("CLOSING BALANCE", disabled=True)
+# Full Excel 2010 Engine Component (Interactive, Formulas, Drag & Drop)
+excel_2010_html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/plugins/css/pluginsCss.css' />
+    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/plugins/plugins.css' />
+    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/css/luckysheet.css' />
+    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/assets/iconfont/iconfont.css' />
+    <script src="https://cdn.jsdelivr.net/npm/luckysheet/dist/plugins/js/plugin.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/luckysheet/dist/luckysheet.umd.js"></script>
+    <style>
+        html, body {{ margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; }}
+        #luckysheet {{ margin: 0px; padding: 0px; position: absolute; width: 100%; height: 100%; left: 0px; top: 0px; }}
+    </style>
+</head>
+<body>
+    <div id="luckysheet"></div>
+    <script>
+        $(function () {{
+            luckysheet.create({{
+                container: 'luckysheet',
+                showinfobar: false,
+                showsheetbar: false,
+                showstatisticBar: true,
+                enableAddRow: false,
+                enableAddBackTop: false,
+                data: [{{
+                    "name": "MASTER REPORT",
+                    "status": 1,
+                    "order": 0,
+                    "data": [],
+                    "config": {{
+                        "columnlen": {{
+                            "0": 55, "1": 75, "2": 150, "3": 130, "4": 90, "5": 110,
+                            "6": 100, "7": 130, "8": 110, "9": 90, "10": 120, "11": 90,
+                            "12": 110, "13": 140, "14": 130, "15": 120
+                        }}
+                    }},
+                    "celldata": {json.dumps(celldata)},
+                    "row": {len(selected_branches) + 5},
+                    "column": 18
+                }}]
+            }});
+        }});
+    </script>
+</body>
+</html>
+"""
 
-edited_df = st.data_editor(
-    df_active,
-    use_container_width=True,
-    height=800,
-    disabled=["Sl.No.", "CODE", "BRANCH", "CLOSING BALANCE"],
-    column_config=column_config,
-    num_rows="fixed",
-    key=f"master_grid_{work_mode}_{len(selected_branches)}"
-)
-
-# Auto-save changes back to global cache
-has_changes = False
-for _, row in edited_df.iterrows():
-    b_name = row["BRANCH"]
-    store_entry = db.setdefault("entries", {}).setdefault(b_name, {})
-    for col in ["OPENING BALANCE", "DEPOSIT", "DENOMINATION", "AddinGS", "PENDING APPRVLS", "FINANCE AMNT", "SR", "SWEEPER SALARY", "EDITS", "APX SHORTAGE", "(KSP)'Sir's Approvals", "REMARKS"]:
-        val = str(row[col]) if pd.notna(row[col]) else ""
-        if store_entry.get(col, "") != val:
-            store_entry[col] = val
-            has_changes = True
-
-if has_changes:
-    st.rerun()
+components.html(excel_2010_html, height=860)
