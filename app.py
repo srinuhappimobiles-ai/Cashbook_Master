@@ -1,18 +1,13 @@
 import io
+import math
 import os
 import re
-import math
-import subprocess
-import platform
-import numpy as np
+import sqlite3
 import pandas as pd
 import streamlit as st
-import openpyxl
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
 
 st.set_page_config(
-    page_title="Happi Cashbook Master - Excel Automation",
+    page_title="Happi Cashbook Master Workspace",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -20,34 +15,31 @@ st.set_page_config(
 st.markdown("""
     <style>
     .block-container { 
-        padding-top: 1.2rem !important; 
-        padding-bottom: 1rem !important; 
-        padding-left: 1.5rem !important; 
-        padding-right: 1.5rem !important; 
+        padding-top: 1rem !important; 
+        padding-bottom: 0.5rem !important; 
+        padding-left: 1rem !important; 
+        padding-right: 1rem !important; 
         max-width: 100% !important;
     }
     #MainMenu {visibility: hidden !important;}
     footer {visibility: hidden !important;}
-    .main-card {
-        background: #ffffff;
-        border: 1px solid #e2e8f0;
-        border-radius: 8px;
-        padding: 24px;
-        margin-bottom: 20px;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    [data-testid="stSidebarCollapseButton"], [data-testid="stSidebarNav"] {
+        visibility: visible !important;
+        display: block !important;
     }
     .main-title { 
-        font-size: 22px; 
+        font-size: 19px; 
         font-weight: 700; 
-        color: #107c41; 
-        margin-bottom: 6px; 
+        color: #0E4C92; 
         display: flex; 
         align-items: center; 
-        gap: 10px; 
+        gap: 8px; 
     }
     .stSidebar { background-color: #f8fafc; }
     </style>
 """, unsafe_allow_html=True)
+
+DB_FILE = "cashbook_master.db"
 
 DEFAULT_BRANCHES = [
     {"CODE": "ADBD", "BRANCH": "ADILABAD"}, {"CODE": "AMP", "BRANCH": "AMALAPURAM"},
@@ -106,17 +98,91 @@ DEFAULT_BRANCHES = [
     {"CODE": "ZB", "BRANCH": "ZAHEERABAD"}
 ]
 
-HEADERS = [
-    "SL.No.", "CODE", "BRANCH", "OPENING BALANCE", "DEPOSIT", "DENOMINATION", 
-    "AddinGS", "PENDING APPRVLS", "FINANCE AMNT", "SR", "SWEEPER SALARY", 
-    "EDITS", "APX SHORTAGE", "(KSP)'Sir's Approvals", "CLOSING BALANCE", "REMARKS"
+DATA_COLS = [
+    "OPENING_BALANCE", "DEPOSIT", "DENOMINATION", "ADDINGS",
+    "PENDING_APPRVLS", "FINANCE_AMNT", "SR", "SWEEPER_SALARY",
+    "EDITS", "APX_SHORTAGE", "KSP_APPROVALS", "REMARKS"
 ]
 
-SUPPORTED_TYPES = ["xlsx", "xls", "xlsm", "xlsb", "csv"]
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS cashbook (
+            code TEXT,
+            branch TEXT PRIMARY KEY,
+            opening_balance TEXT DEFAULT '',
+            deposit TEXT DEFAULT '',
+            denomination TEXT DEFAULT '',
+            addings TEXT DEFAULT '',
+            pending_apprvls TEXT DEFAULT '',
+            finance_amnt TEXT DEFAULT '',
+            sr TEXT DEFAULT '',
+            sweeper_salary TEXT DEFAULT '',
+            edits TEXT DEFAULT '',
+            apx_shortage TEXT DEFAULT '',
+            ksp_approvals TEXT DEFAULT '',
+            remarks TEXT DEFAULT ''
+        )
+    """)
+    for b in DEFAULT_BRANCHES:
+        c.execute("""
+            INSERT OR IGNORE INTO cashbook (code, branch)
+            VALUES (?, ?)
+        """, (b["CODE"], b["BRANCH"]))
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def get_db_data():
+    conn = sqlite3.connect(DB_FILE)
+    df = pd.read_sql_query("SELECT * FROM cashbook ORDER BY branch ASC", conn)
+    conn.close()
+    return df
+
+def update_cell_db(branch, col_name, val):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute(f"UPDATE cashbook SET {col_name.lower()} = ? WHERE branch = ?", (str(val), branch))
+    conn.commit()
+    conn.close()
+
+def bulk_update_col(data_dict, col_name):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    for branch, val in data_dict.items():
+        c.execute(f"UPDATE cashbook SET {col_name.lower()} = ? WHERE branch = ?", (str(val), branch))
+    conn.commit()
+    conn.close()
+
+def reset_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("DELETE FROM cashbook")
+    conn.commit()
+    conn.close()
+    init_db()
 
 def normalize_key(s):
     if not s: return ""
     return re.sub(r"[^A-Za-z0-9]", "", str(s)).upper()
+
+def evaluate_val(val):
+    if val is None or pd.isna(val): return 0.0
+    s = str(val).strip()
+    if not s: return 0.0
+    if s.startswith("="):
+        expr = s[1:]
+        try:
+            if re.match(r"^[0-9+\-*/().\s]+$", expr):
+                return float(eval(expr))
+        except:
+            return 0.0
+    try:
+        return float(s.replace(",", ""))
+    except:
+        return 0.0
 
 def format_excel_formula(num_list):
     if not num_list: return ""
@@ -125,55 +191,43 @@ def format_excel_formula(num_list):
     if len(clean_ints) == 1: return clean_ints[0]
     return "=" + "+".join(clean_ints)
 
-# Session state initialization
-if "dr_balances" not in st.session_state:
-    st.session_state.dr_balances = {}
-if "addins_data" not in st.session_state:
-    st.session_state.addins_data = {}
-
-# --- SIDEBAR CONTROL PANEL ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.markdown("### 🏢 Happi Control Hub")
     
     st.markdown("#### 👥 Work Assignment Mode")
     work_mode = st.radio(
-        "Select Mode:",
+        "Assignment Mode:",
         ["👤 Single Cashier (All Stores)", "👥 Two Cashiers (Split 50-50)"],
         label_visibility="collapsed"
     )
 
-    all_branches = sorted(DEFAULT_BRANCHES, key=lambda x: str(x.get("BRANCH", "")).upper())
+    all_branches = sorted(DEFAULT_BRANCHES, key=lambda x: x["BRANCH"])
     selected_branches = all_branches
-    sheet_title = "MASTER CASHBOOK"
 
     if work_mode == "👥 Two Cashiers (Split 50-50)":
         mid_point = math.ceil(len(all_branches) / 2)
         c1_branches = all_branches[:mid_point]
         c2_branches = all_branches[mid_point:]
-        cashier_view = st.selectbox("Current Cashier Sheet:", [f"Cashier 1 ({len(c1_branches)} Stores)", f"Cashier 2 ({len(c2_branches)} Stores)"])
-        if "Cashier 1" in cashier_view:
-            selected_branches = c1_branches
-            sheet_title = "CASHIER 1 CASHBOOK"
-        else:
-            selected_branches = c2_branches
-            sheet_title = "CASHIER 2 CASHBOOK"
+        cashier_view = st.selectbox("Current Cashier:", [f"Cashier 1 ({len(c1_branches)} Stores)", f"Cashier 2 ({len(c2_branches)} Stores)"])
+        selected_branches = c1_branches if "Cashier 1" in cashier_view else c2_branches
 
     st.markdown("---")
     st.markdown("#### 📥 Direct File Ingestion")
     
     with st.expander("📂 1. Apex Dr Balance File", expanded=True):
-        ho_dump_file = st.file_uploader("Upload Apex Dr Balance", type=SUPPORTED_TYPES, key="ho_dump")
+        ho_dump_file = st.file_uploader("Upload Apex File", type=["xlsx", "xls", "xlsm", "csv"], key="ho_dump")
 
     with st.expander("📥 2. Addins Dump File", expanded=True):
-        addins_dump_file = st.file_uploader("Upload Addins Dump", type=SUPPORTED_TYPES, key="addins_dump")
+        addins_dump_file = st.file_uploader("Upload Addins File", type=["xlsx", "xls", "xlsm", "csv"], key="addins_dump")
 
     st.markdown("---")
-    if st.button("🧹 Clear Ingested Data", use_container_width=True):
-        st.session_state.dr_balances = {}
-        st.session_state.addins_data = {}
+    st.markdown("#### ⚙️ Data Actions")
+    if st.button("🧹 Clear & Reset Master Database", use_container_width=True):
+        reset_db()
         st.rerun()
 
-# 1. Process Apex Dump
+# 1. Process Apex Ingestion
 if ho_dump_file:
     try:
         df_dump = pd.read_csv(ho_dump_file) if ho_dump_file.name.endswith(".csv") else pd.read_excel(ho_dump_file)
@@ -189,12 +243,20 @@ if ho_dump_file:
             if match and b_val:
                 dump_dict[b_val] = int(round(float(match.group(1))))
 
-        st.session_state.dr_balances = dump_dict
-        st.sidebar.success(f"✅ Loaded {len(dump_dict)} Opening Balances!")
+        update_payload = {}
+        for b in all_branches:
+            val = dump_dict.get(normalize_key(b["BRANCH"]), dump_dict.get(normalize_key(b["CODE"])))
+            if val is not None:
+                update_payload[b["BRANCH"]] = str(val)
+
+        if update_payload:
+            bulk_update_col(update_payload, "opening_balance")
+            st.sidebar.success(f"✅ Synced {len(update_payload)} Opening Balances!")
+            st.rerun()
     except Exception as e:
         st.sidebar.error(f"Apex Error: {e}")
 
-# 2. Process Addins Dump
+# 2. Process Addins Ingestion
 if addins_dump_file:
     try:
         df_addins = pd.read_csv(addins_dump_file) if addins_dump_file.name.endswith(".csv") else pd.read_excel(addins_dump_file)
@@ -212,181 +274,127 @@ if addins_dump_file:
                 if clean_amt > 0:
                     addins_dict.setdefault(b_val, []).append(clean_amt)
 
-        st.session_state.addins_data = addins_dict
-        st.sidebar.success(f"✅ Loaded {len(addins_dict)} Store Addins!")
+        update_payload = {}
+        for b in all_branches:
+            vouchers = addins_dict.get(normalize_key(b["BRANCH"]), addins_dict.get(normalize_key(b["CODE"]), []))
+            if vouchers:
+                update_payload[b["BRANCH"]] = format_excel_formula(vouchers)
+
+        if update_payload:
+            bulk_update_col(update_payload, "addings")
+            st.sidebar.success(f"✅ Synced {len(update_payload)} Addin Vouchers!")
+            st.rerun()
     except Exception as e:
         st.sidebar.error(f"Addins Error: {e}")
 
-# --- BUILD EXCEL 2010 WORKBOOK IN MEMORY ---
-def generate_excel_2010_file(target_branches, title):
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = title
+# Build Active Workspace DataFrame from SQLite
+df_raw = get_db_data()
+df_raw.fillna("", inplace=True)
 
-    # Styles
-    header_fill = PatternFill(start_color="107C41", end_color="107C41", fill_type="solid")
-    header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
-    data_font = Font(name="Calibri", size=11)
-    bold_font = Font(name="Calibri", size=11, bold=True)
-    
-    thin_border = Border(
-        left=Side(style='thin', color='A0A0A0'),
-        right=Side(style='thin', color='A0A0A0'),
-        top=Side(style='thin', color='A0A0A0'),
-        bottom=Side(style='thin', color='A0A0A0')
+selected_branch_names = [b["BRANCH"] for b in selected_branches]
+df_filtered = df_raw[df_raw["branch"].isin(selected_branch_names)].copy()
+
+# Add Calculated Closing Balance
+def compute_closing(row):
+    op = evaluate_val(row["opening_balance"])
+    if not str(row["opening_balance"]).strip():
+        return ""
+    deductions = sum([
+        evaluate_val(row["deposit"]),
+        evaluate_val(row["denomination"]),
+        evaluate_val(row["addings"]),
+        evaluate_val(row["pending_apprvls"]),
+        evaluate_val(row["finance_amnt"]),
+        evaluate_val(row["sr"]),
+        evaluate_val(row["sweeper_salary"]),
+        evaluate_val(row["edits"]),
+        evaluate_val(row["apx_shortage"]),
+        evaluate_val(row["ksp_approvals"])
+    ])
+    return str(int(round(op - deductions)))
+
+df_filtered["closing_balance"] = df_filtered.apply(compute_closing, axis=1)
+
+# Rename Columns for Clean Presentation
+col_display_map = {
+    "code": "CODE",
+    "branch": "BRANCH",
+    "opening_balance": "OPENING BALANCE",
+    "deposit": "DEPOSIT",
+    "denomination": "DENOMINATION",
+    "addings": "AddinGS",
+    "pending_apprvls": "PENDING APPRVLS",
+    "finance_amnt": "FINANCE AMNT",
+    "sr": "SR",
+    "sweeper_salary": "SWEEPER SALARY",
+    "edits": "EDITS",
+    "apx_shortage": "APX SHORTAGE",
+    "ksp_approvals": "(KSP)'Sir's Approvals",
+    "closing_balance": "CLOSING BALANCE",
+    "remarks": "REMARKS"
+}
+
+df_filtered.rename(columns=col_display_map, inplace=True)
+df_filtered.insert(0, "Sl.No.", range(1, len(df_filtered) + 1))
+
+# --- HEADER BAR & DOWNLOAD ---
+col_h1, col_h2 = st.columns([3.5, 1])
+
+with col_h1:
+    st.markdown(
+        f'<div class="main-title">📊 HAPPI MOBILES - MASTER CASHBOOK WORKSPACE '
+        f'<span style="font-size: 13px; color: #16a34a; font-weight: bold;">● SQLite Persistent Cloud Sync</span></div>',
+        unsafe_allow_html=True
     )
 
-    # 1. Write Headers (Row 1)
-    for col_idx, header in enumerate(HEADERS, start=1):
-        cell = ws.cell(row=1, column=col_idx, value=header)
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-        cell.border = thin_border
-    ws.row_dimensions[1].height = 26
-
-    # 2. Write Store Rows
-    dr_map = st.session_state.dr_balances
-    addins_map = st.session_state.addins_data
-
-    for row_idx, b in enumerate(target_branches, start=2):
-        b_name = b.get("BRANCH", "")
-        b_code = b.get("CODE", "")
-        norm_name = normalize_key(b_name)
-        norm_code = normalize_key(b_code)
-
-        # Opening Balance
-        op_val = dr_map.get(norm_name, dr_map.get(norm_code, ""))
-
-        # Addins Formula
-        vouchers = addins_map.get(norm_name, addins_map.get(norm_code, []))
-        addin_val = format_excel_formula(vouchers) if vouchers else ""
-
-        # Closing Balance Formula: =D2-SUM(E2:N2)
-        closing_formula = f"=D{row_idx}-SUM(E{row_idx}:N{row_idx})"
-
-        row_values = [
-            row_idx - 1,      # A: SL.No.
-            b_code,           # B: CODE
-            b_name,           # C: BRANCH
-            op_val,           # D: OPENING BALANCE
-            "",               # E: DEPOSIT
-            "",               # F: DENOMINATION
-            addin_val,        # G: AddinGS
-            "",               # H: PENDING APPRVLS
-            "",               # I: FINANCE AMNT
-            "",               # J: SR
-            "",               # K: SWEEPER SALARY
-            "",               # L: EDITS
-            "",               # M: APX SHORTAGE
-            "",               # N: (KSP)'Sir's Approvals
-            closing_formula,  # O: CLOSING BALANCE
-            ""                # P: REMARKS
-        ]
-
-        for col_idx, val in enumerate(row_values, start=1):
-            cell = ws.cell(row=row_idx, column=col_idx)
-            if str(val).startswith("="):
-                cell.value = str(val)
-            elif isinstance(val, (int, float)):
-                cell.value = val
-                cell.number_format = '#,##0'
-            else:
-                cell.value = val
-
-            cell.font = bold_font if col_idx in [1, 2, 3, 15] else data_font
-            cell.alignment = Alignment(horizontal="center" if col_idx in [1, 2] else "left" if col_idx in [3, 16] else "right", vertical="center")
-            cell.border = thin_border
-
-        ws.row_dimensions[row_idx].height = 20
-
-    # Auto-adjust column widths
-    column_widths = {
-        1: 8, 2: 12, 3: 24, 4: 20, 5: 14, 6: 16, 7: 16, 8: 18,
-        9: 16, 10: 14, 11: 18, 12: 14, 13: 16, 14: 22, 15: 20, 16: 22
-    }
-    for col_idx, width in column_widths.items():
-        ws.column_dimensions[get_column_letter(col_idx)].width = width
-
-    # Save to BytesIO
+with col_h2:
     output = io.BytesIO()
-    wb.save(output)
-    return output.getvalue()
-
-# Generate Excel Binary
-excel_data = generate_excel_2010_file(selected_branches, sheet_title)
-file_name = f"{sheet_title.replace(' ', '_')}_2010.xlsx"
-
-# Function to launch directly into desktop MS Excel
-def open_in_desktop_excel(data, fname):
-    local_path = os.path.abspath(fname)
-    with open(local_path, "wb") as f:
-        f.write(data)
-    
-    current_os = platform.system()
-    if current_os == "Windows":
-        os.startfile(local_path)
-    elif current_os == "Darwin":
-        subprocess.call(["open", local_path])
-    else:
-        subprocess.call(["xdg-open", local_path])
-
-# --- MAIN PAGE DISPLAY ---
-st.markdown(f'<div class="main-title">📊 HAPPI MOBILES - DESKTOP EXCEL 2010 WORKSPACE</div>', unsafe_allow_html=True)
-
-st.markdown(f"""
-<div class="main-card">
-    <h4 style="margin-top: 0; color: #1e293b;">⚡ Master Sheet Ready ({len(selected_branches)} Stores Active)</h4>
-    <p style="color: #64748b; font-size: 14px; margin-bottom: 20px;">
-        All Apex Dr Balances, Addins formulas, and Closing Balance calculations (<code>=D2-SUM(E2:N2)</code>) have been processed.
-        Click below to launch directly into your native <b>Microsoft Excel 2010</b> software with full keyboard shortcut support (<code>Ctrl+D</code>, <code>Alt+HBA</code>, <code>Alt+=</code>).
-    </p>
-</div>
-""", unsafe_allow_html=True)
-
-col_act1, col_act2 = st.columns(2)
-
-with col_act1:
-    if st.button("🚀 Open Directly in Desktop Excel 2010", type="primary", use_container_width=True):
-        try:
-            open_in_desktop_excel(excel_data, file_name)
-            st.success(f"✅ Launched {file_name} in Microsoft Excel 2010!")
-        except Exception as e:
-            st.info("💡 Running on Cloud: Please use the Download button on the right to open directly in your Excel 2010.")
-
-with col_act2:
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_filtered.to_excel(writer, index=False, sheet_name='MASTER REPORT')
     st.download_button(
-        label="📥 Download & Open Excel 2010 File",
-        data=excel_data,
-        file_name=file_name,
+        label="📥 Download Master Excel",
+        data=output.getvalue(),
+        file_name="HO_MASTER_CASHBOOK_REPORT.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         use_container_width=True
     )
 
-st.markdown("---")
-st.markdown("#### 📋 Live Preview of Mapped Data")
+# Interactive Real-Time Data Grid
+column_config = {
+    col: st.column_config.TextColumn(col) for col in [
+        "OPENING BALANCE", "DEPOSIT", "DENOMINATION", "AddinGS", "PENDING APPRVLS",
+        "FINANCE AMNT", "SR", "SWEEPER SALARY", "EDITS", "APX SHORTAGE",
+        "(KSP)'Sir's Approvals", "REMARKS"
+    ]
+}
+column_config["CLOSING BALANCE"] = st.column_config.TextColumn("CLOSING BALANCE", disabled=True)
 
-preview_rows = []
-dr_map = st.session_state.dr_balances
-addins_map = st.session_state.addins_data
+edited_df = st.data_editor(
+    df_filtered,
+    use_container_width=True,
+    height=780,
+    disabled=["Sl.No.", "CODE", "BRANCH", "CLOSING BALANCE"],
+    column_config=column_config,
+    num_rows="fixed",
+    key=f"cashbook_grid_{work_mode}_{len(selected_branches)}"
+)
 
-for idx, b in enumerate(selected_branches, start=1):
-    b_name = b.get("BRANCH", "")
-    b_code = b.get("CODE", "")
-    norm_name = normalize_key(b_name)
-    norm_code = normalize_key(b_code)
+# Auto-Save Modified Cells Directly to SQLite
+rev_map = {v: k for k, v in col_display_map.items()}
+has_updates = False
+
+for _, row in edited_df.iterrows():
+    b_name = row["BRANCH"]
+    orig_row = df_filtered[df_filtered["BRANCH"] == b_name].iloc[0]
     
-    op_val = dr_map.get(norm_name, dr_map.get(norm_code, ""))
-    vouchers = addins_map.get(norm_name, addins_map.get(norm_code, []))
-    addin_val = format_excel_formula(vouchers) if vouchers else ""
-    
-    preview_rows.append({
-        "SL.No.": idx,
-        "CODE": b_code,
-        "BRANCH": b_name,
-        "OPENING BALANCE": op_val,
-        "AddinGS": addin_val,
-        "CLOSING BALANCE FORMULA": f"=D{idx+1}-SUM(E{idx+1}:N{idx+1})"
-    })
+    for display_col in list(col_display_map.values())[2:]: # Only editable columns
+        new_val = str(row[display_col]) if pd.notna(row[display_col]) else ""
+        old_val = str(orig_row[display_col]) if pd.notna(orig_row[display_col]) else ""
+        
+        if new_val != old_val:
+            db_col = rev_map[display_col]
+            update_cell_db(b_name, db_col, new_val)
+            has_updates = True
 
-st.dataframe(pd.DataFrame(preview_rows), use_container_width=True, height=450)
+if has_updates:
+    st.rerun()
