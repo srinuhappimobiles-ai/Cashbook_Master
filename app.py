@@ -48,7 +48,7 @@ DEFAULT_BRANCHES = [
     {"CODE": "AMPT", "BRANCH": "AMEERPET"}, {"CODE": "ANTP", "BRANCH": "ANANTAPUR"},
     {"CODE": "ARMU", "BRANCH": "ARMOOR"}, {"CODE": "ATMKR", "BRANCH": "ATMAKUR"},
     {"CODE": "BDHN", "BRANCH": "BODHAN"}, {"CODE": "BDPL", "BRANCH": "BODUPPAL"},
-    {"CODE": "BG", "BHUVANAGIRI": "BG"}, {"CODE": "BVRM", "BRANCH": "BHIMAVARAM"},
+    {"CODE": "BG", "BRANCH": "BHUVANAGIRI"}, {"CODE": "BVRM", "BRANCH": "BHIMAVARAM"},
     {"CODE": "CHND", "BRANCH": "CHANDANAGAR"}, {"CODE": "CHNT", "BRANCH": "CHINTAL"},
     {"CODE": "DBGS", "BRANCH": "DABAGARDENS"}, {"CODE": "DBGS-2", "BRANCH": "DABAGARDENS-2"},
     {"CODE": "DVKD", "BRANCH": "DEVARAKONDA"}, {"CODE": "DVRM", "BRANCH": "DHARMAVRAM"},
@@ -119,14 +119,18 @@ all_branches = db["branches"]
 SUPPORTED_EXCEL_TYPES = ["xlsx", "xls", "xlsm", "xlsb", "csv"]
 
 def normalize_key(s):
-    if not s: return ""
+    if not s:
+        return ""
     return re.sub(r"[^A-Za-z0-9]", "", str(s)).upper()
 
 def format_excel_formula(num_list):
-    if not num_list: return ""
+    if not num_list:
+        return ""
     clean_ints = [str(int(x)) for x in num_list if x > 0]
-    if not clean_ints: return ""
-    if len(clean_ints) == 1: return clean_ints[0]
+    if not clean_ints:
+        return ""
+    if len(clean_ints) == 1:
+        return clean_ints[0]
     return "=" + "+".join(clean_ints)
 
 # --- SIDEBAR CONTROL PANEL ---
@@ -211,7 +215,8 @@ if master_import_file:
         imported_count = 0
         for _, row in df_imported.iterrows():
             b_val_norm = normalize_key(row[b_col_actual])
-            if not b_val_norm: continue
+            if not b_val_norm:
+                continue
 
             matched_branch = None
             for b in all_branches:
@@ -223,3 +228,211 @@ if master_import_file:
                 target_entry = db.setdefault("entries", {}).setdefault(matched_branch, {})
                 for orig_col, cell_val in row.items():
                     standard_col = col_mapping.get(orig_col, str(orig_col).strip())
+                    if standard_col not in ["SL.No.", "CODE", "BRANCH", "CLOSING BALANCE"]:
+                        val_str = str(cell_val).strip()
+                        if val_str and val_str != "nan":
+                            target_entry[standard_col] = val_str
+                imported_count += 1
+
+        st.sidebar.success(f"✅ Loaded {imported_count} Stores from {master_import_file.name}!")
+    except Exception as e:
+        st.sidebar.error(f"Import Error: {e}")
+
+# 2. Process Apex Dr Dump
+if ho_dump_file:
+    try:
+        df_dump = pd.read_csv(ho_dump_file) if ho_dump_file.name.endswith(".csv") else pd.read_excel(ho_dump_file)
+        b_col, a_col = df_dump.columns[0], df_dump.columns[1] if len(df_dump.columns) > 1 else df_dump.columns[0]
+        for col in df_dump.columns:
+            if "branch" in str(col).lower() or "store" in str(col).lower():
+                b_col = col
+            if "balance" in str(col).lower() or "opening" in str(col).lower() or "amount" in str(col).lower():
+                a_col = col
+
+        dump_dict = {}
+        for _, row in df_dump.iterrows():
+            b_val, raw_amt = normalize_key(row[b_col]), str(row[a_col]).replace(",", "").strip()
+            match = re.search(r"(\d+\.?\d*)", raw_amt)
+            if match and b_val:
+                dump_dict[b_val] = int(round(float(match.group(1))))
+
+        for b in all_branches:
+            val = dump_dict.get(normalize_key(b.get("BRANCH", "")), dump_dict.get(normalize_key(b.get("CODE", ""))))
+            if val is not None:
+                db.setdefault("entries", {}).setdefault(b.get("BRANCH", ""), {})["OPENING BALANCE"] = str(val)
+        st.sidebar.success("✅ Apex Dr Balances Synced Globally!")
+    except Exception as e:
+        st.sidebar.error(f"Apex Error: {e}")
+
+# 3. Process Addins Dump
+if addins_dump_file:
+    try:
+        df_addins = pd.read_csv(addins_dump_file) if addins_dump_file.name.endswith(".csv") else pd.read_excel(addins_dump_file)
+        b_col, a_col = df_addins.columns[0], df_addins.columns[1] if len(df_addins.columns) > 1 else df_addins.columns[0]
+        for col in df_addins.columns:
+            if "branch" in str(col).lower() or "store" in str(col).lower():
+                b_col = col
+            if "amount" in str(col).lower() or "total" in str(col).lower() or "addin" in str(col).lower():
+                a_col = col
+
+        addins_dict = {}
+        for _, row in df_addins.iterrows():
+            b_val, raw_amt = normalize_key(row[b_col]), str(row[a_col]).replace(",", "").strip()
+            match = re.search(r"(\d+\.?\d*)", raw_amt)
+            if match and b_val:
+                clean_amt = int(round(float(match.group(1))))
+                if clean_amt > 0:
+                    addins_dict.setdefault(b_val, []).append(clean_amt)
+
+        for b in all_branches:
+            vouchers = addins_dict.get(normalize_key(b.get("BRANCH", "")), addins_dict.get(normalize_key(b.get("CODE", "")), []))
+            if vouchers:
+                clean_ints = [str(int(x)) for x in vouchers if x > 0]
+                formula_val = clean_ints[0] if len(clean_ints) == 1 else "=" + "+".join(clean_ints)
+                db.setdefault("entries", {}).setdefault(b.get("BRANCH", ""), {})["AddinGS"] = formula_val
+        st.sidebar.success("✅ Addins Synced Globally!")
+    except Exception as e:
+        st.sidebar.error(f"Addins Error: {e}")
+
+# Prepare Celldata for Excel 2010
+celldata = []
+
+# Header Row: Excel 2010 Classic Dark Green Styling
+for c_idx, h_text in enumerate(HEADERS):
+    celldata.append({
+        "r": 0, "c": c_idx,
+        "v": { "v": h_text, "m": h_text, "bg": "#107c41", "fc": "#ffffff", "bl": 1, "ht": 0, "vt": 0 }
+    })
+
+entries_dict = db.get("entries", {})
+for r_idx, b in enumerate(selected_branches, start=1):
+    b_name = b.get("BRANCH", "")
+    e = entries_dict.get(b_name, {})
+    excel_row_num = r_idx + 1
+    default_closing_formula = f"=D{excel_row_num}-SUM(E{excel_row_num}:N{excel_row_num})"
+
+    row_vals = [
+        str(r_idx),
+        b.get("CODE", ""),
+        b.get("BRANCH", ""),
+        str(e.get("OPENING BALANCE", "")),
+        str(e.get("DEPOSIT", "")),
+        str(e.get("DENOMINATION", "")),
+        str(e.get("AddinGS", "")),
+        str(e.get("PENDING APPRVLS", "")),
+        str(e.get("FINANCE AMNT", "")),
+        str(e.get("SR", "")),
+        str(e.get("SWEEPER SALARY", "")),
+        str(e.get("EDITS", "")),
+        str(e.get("APX SHORTAGE", "")),
+        str(e.get("(KSP)'Sir's Approvals", "")),
+        str(e.get("CLOSING BALANCE", default_closing_formula)),
+        str(e.get("REMARKS", ""))
+    ]
+
+    for c_idx, val in enumerate(row_vals):
+        if val:
+            cell_obj = {"r": r_idx, "c": c_idx, "v": {}}
+            if str(val).startswith("="):
+                cell_obj["v"]["f"] = str(val)
+            else:
+                try:
+                    num = float(str(val).replace(",", ""))
+                    cell_obj["v"]["v"] = int(round(num)) if num.is_integer() else num
+                    cell_obj["v"]["ct"] = {"fa": "General", "t": "n"}
+                except Exception:
+                    cell_obj["v"]["v"] = str(val)
+                    cell_obj["v"]["ct"] = {"fa": "General", "t": "g"}
+            celldata.append(cell_obj)
+
+# Main Workspace Header & Export
+col_head1, col_head2 = st.columns([3.5, 1])
+
+with col_head1:
+    st.markdown(
+        f'<div class="main-title">📊 HAPPI MOBILES - MASTER CASHBOOK (MICROSOFT EXCEL 2010 WORKSPACE) '
+        f'<span style="font-size: 13px; color: #107c41; font-weight: bold;">● Active ({len(selected_branches)} Stores)</span></div>',
+        unsafe_allow_html=True
+    )
+
+with col_head2:
+    export_rows = []
+    for idx, b in enumerate(all_branches, start=1):
+        e = entries_dict.get(b.get("BRANCH", ""), {})
+        excel_row_num = idx + 1
+        export_rows.append({
+            "SL.No.": idx, "CODE": b.get("CODE", ""), "BRANCH": b.get("BRANCH", ""),
+            "OPENING BALANCE": e.get("OPENING BALANCE", ""), "DEPOSIT": e.get("DEPOSIT", ""),
+            "DENOMINATION": e.get("DENOMINATION", ""), "AddinGS": e.get("AddinGS", ""),
+            "PENDING APPRVLS": e.get("PENDING APPRVLS", ""), "FINANCE AMNT": e.get("FINANCE AMNT", ""),
+            "SR": e.get("SR", ""), "SWEEPER SALARY": e.get("SWEEPER SALARY", ""),
+            "EDITS": e.get("EDITS", ""), "APX SHORTAGE": e.get("APX SHORTAGE", ""),
+            "(KSP)'Sir's Approvals": e.get("(KSP)'Sir's Approvals", ""),
+            "CLOSING BALANCE": e.get("CLOSING BALANCE", f"=D{excel_row_num}-SUM(E{excel_row_num}:N{excel_row_num})"),
+            "REMARKS": e.get("REMARKS", "")
+        })
+    df_export = pd.DataFrame(export_rows)
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        df_export.to_excel(writer, index=False, sheet_name='MASTER REPORT')
+    st.download_button(
+        label="📥 Download Master Excel",
+        data=output.getvalue(),
+        file_name="HO_MASTER_CASHBOOK_2010.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True
+    )
+
+# Full Excel 2010 Native Spreadsheet Engine
+excel_2010_html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/plugins/css/pluginsCss.css' />
+    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/plugins/plugins.css' />
+    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/css/luckysheet.css' />
+    <link rel='stylesheet' href='https://cdn.jsdelivr.net/npm/luckysheet/dist/assets/iconfont/iconfont.css' />
+    <script src="https://cdn.jsdelivr.net/npm/luckysheet/dist/plugins/js/plugin.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/luckysheet/dist/luckysheet.umd.js"></script>
+    <style>
+        html, body {{ margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; font-family: 'Segoe UI', Calibri, Arial, sans-serif; }}
+        #luckysheet {{ margin: 0px; padding: 0px; position: absolute; width: 100%; height: 100%; left: 0px; top: 0px; }}
+        .luckysheet-toolbar {{ background: #f3f3f3 !important; border-bottom: 1px solid #d4d4d4 !important; }}
+    </style>
+</head>
+<body>
+    <div id="luckysheet"></div>
+    <script>
+        $(function () {{
+            luckysheet.create({{
+                container: 'luckysheet',
+                showinfobar: false,
+                showsheetbar: false,
+                showstatisticBar: true,
+                enableAddRow: false,
+                enableAddBackTop: false,
+                data: [{{
+                    "name": "MASTER REPORT",
+                    "status": 1,
+                    "order": 0,
+                    "data": [],
+                    "config": {{
+                        "columnlen": {{
+                            "0": 55, "1": 75, "2": 150, "3": 130, "4": 90, "5": 110,
+                            "6": 100, "7": 130, "8": 110, "9": 90, "10": 120, "11": 90,
+                            "12": 110, "13": 140, "14": 130, "15": 120
+                        }}
+                    }},
+                    "celldata": {json.dumps(celldata)},
+                    "row": {len(selected_branches) + 5},
+                    "column": 18
+                }}]
+            }});
+        }});
+    </script>
+</body>
+</html>
+"""
+
+components.html(excel_2010_html, height=860)
