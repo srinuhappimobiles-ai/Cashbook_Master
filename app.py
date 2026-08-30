@@ -160,12 +160,11 @@ with st.sidebar:
         master_import_file = st.file_uploader("Upload Local Sheet to Populate", type=SUPPORTED_EXCEL_TYPES, key="local_master_uploader")
 
     st.markdown("---")
-    st.markdown("#### ⌨️ Active Excel 2010 Shortcuts")
+    st.markdown("#### ⌨️ Active Excel Shortcuts")
     st.info("""
-    * **Ctrl + D**: Fill Down (Drags formulas/values down)
-    * **Ctrl + R**: Fill Right (Drags rightwards)
-    * **Alt + H + B + A**: Apply All Borders
-    * **Alt + H + B + N**: Remove Borders
+    * **Ctrl + D**: Fill Down (Drag Formula Down)
+    * **Alt + H + B + A**: All Borders
+    * **Alt + H + B + N**: Clear Borders
     * **Alt + =**: AutoSum Formula
     * **Ctrl + B / I / U**: Bold, Italic, Underline
     """)
@@ -354,7 +353,7 @@ col_head1, col_head2 = st.columns([3.5, 1])
 
 with col_head1:
     st.markdown(
-        f'<div class="main-title">📊 HAPPI MOBILES - MASTER CASHBOOK (MICROSOFT EXCEL 2010 WORKSPACE) '
+        f'<div class="main-title">📊 HAPPI MOBILES - MASTER CASHBOOK (EXCEL 2010 WORKSPACE) '
         f'<span style="font-size: 13px; color: #107c41; font-weight: bold;">● Active ({len(selected_branches)} Stores)</span></div>',
         unsafe_allow_html=True
     )
@@ -387,7 +386,7 @@ with col_head2:
         use_container_width=True
     )
 
-# Full Excel 2010 Native Spreadsheet Engine with Direct Capturing Event Hooks
+# Full Excel 2010 Native Spreadsheet Engine with Bulletproof Shortcut Handlers & Action Toolbar
 excel_2010_html = f"""
 <!DOCTYPE html>
 <html>
@@ -401,12 +400,43 @@ excel_2010_html = f"""
     <script src="https://cdn.jsdelivr.net/npm/luckysheet/dist/luckysheet.umd.js"></script>
     <style>
         html, body {{ margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; font-family: 'Segoe UI', Calibri, Arial, sans-serif; }}
-        #luckysheet {{ margin: 0px; padding: 0px; position: absolute; width: 100%; height: 100%; left: 0px; top: 0px; }}
-        .luckysheet-toolbar {{ background: #f3f3f3 !important; border-bottom: 1px solid #d4d4d4 !important; }}
+        #excel_header_bar {{
+            height: 34px;
+            background: #f3f3f3;
+            border-bottom: 1px solid #d4d4d4;
+            display: flex;
+            align-items: center;
+            padding: 0 10px;
+            gap: 8px;
+            font-size: 13px;
+        }}
+        .excel-btn {{
+            background: #ffffff;
+            border: 1px solid #c0c0c0;
+            border-radius: 3px;
+            padding: 3px 8px;
+            cursor: pointer;
+            font-weight: 600;
+            color: #333;
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }}
+        .excel-btn:hover {{ background: #e1dfdd; }}
+        #luckysheet {{ margin: 0px; padding: 0px; position: absolute; width: 100%; height: calc(100% - 34px); left: 0px; top: 34px; }}
     </style>
 </head>
 <body>
+    <div id="excel_header_bar">
+        <span style="font-weight: bold; color: #107c41;">⚡ Excel 2010 Actions:</span>
+        <button class="excel-btn" id="btn_fill_down" title="Shortcut: Ctrl + D">⬇️ Fill Down (Ctrl+D)</button>
+        <button class="excel-btn" id="btn_all_borders" title="Shortcut: Alt + H + B + A">田 All Borders (Alt+HBA)</button>
+        <button class="excel-btn" id="btn_clear_borders" title="Shortcut: Alt + H + B + N">⬜ No Borders</button>
+        <button class="excel-btn" id="btn_autosum" title="Shortcut: Alt + =">Σ AutoSum (Alt+=)</button>
+    </div>
+
     <div id="luckysheet"></div>
+
     <script>
         $(function () {{
             luckysheet.create({{
@@ -441,28 +471,7 @@ excel_2010_html = f"""
                 }});
             }}
 
-            function shiftFormulaCols(formulaStr, colDelta) {{
-                return formulaStr.replace(/([A-Z]+)(\\d+)/g, function(match, col, row) {{
-                    let colNum = 0;
-                    for (let i = 0; i < col.length; i++) {{
-                        colNum = colNum * 26 + (col.charCodeAt(i) - 64);
-                    }}
-                    colNum += colDelta;
-                    let newCol = '';
-                    while (colNum > 0) {{
-                        let rem = (colNum - 1) % 26;
-                        newCol = String.fromCharCode(65 + rem) + newCol;
-                        colNum = Math.floor((colNum - 1) / 26);
-                    }}
-                    return newCol + row;
-                }});
-            }}
-
-            // Intercept and Execute Keyboard Shortcuts directly in capture phase
-            let keySequence = [];
-            let keyTimer = null;
-
-            window.addEventListener('keydown', function(e) {{
+            function executeFillDown() {{
                 let range = luckysheet.getRange();
                 if (!range || range.length === 0) return;
 
@@ -471,109 +480,130 @@ excel_2010_html = f"""
                 let c_start = range[0].column[0];
                 let c_end = range[0].column[1];
 
-                // 1. CTRL + D: Fill Down
+                if (r_start === r_end && r_start > 0) {{
+                    for (let c = c_start; c <= c_end; c++) {{
+                        let topCell = luckysheet.getCellValue(r_start - 1, c, {{ type: 'all' }});
+                        if (topCell) {{
+                            if (topCell.f) {{
+                                luckysheet.setCellValue(r_start, c, {{ f: shiftFormulaRows(topCell.f, 1) }});
+                            }} else {{
+                                luckysheet.setCellValue(r_start, c, topCell.v !== undefined ? topCell.v : topCell);
+                            }}
+                        }}
+                    }}
+                }} else if (r_end > r_start) {{
+                    for (let c = c_start; c <= c_end; c++) {{
+                        let topCell = luckysheet.getCellValue(r_start, c, {{ type: 'all' }});
+                        if (topCell) {{
+                            for (let r = r_start + 1; r <= r_end; r++) {{
+                                let delta = r - r_start;
+                                if (topCell.f) {{
+                                    luckysheet.setCellValue(r, c, {{ f: shiftFormulaRows(topCell.f, delta) }});
+                                }} else {{
+                                    luckysheet.setCellValue(r, c, topCell.v !== undefined ? topCell.v : topCell);
+                                }}
+                            }}
+                        }}
+                    }}
+                }}
+                luckysheet.refresh();
+            }}
+
+            function executeAllBorders() {{
+                let range = luckysheet.getRange();
+                if (!range || range.length === 0) return;
+                let r_start = range[0].row[0];
+                let r_end = range[0].row[1];
+                let c_start = range[0].column[0];
+                let c_end = range[0].column[1];
+
+                luckysheet.setCellFormat(r_start, c_start, 'bd', {{
+                    borderType: 'border-all',
+                    style: '1',
+                    color: '#000000'
+                }}, {{
+                    range: [{{ row: [r_start, r_end], column: [c_start, c_end] }}]
+                }});
+            }}
+
+            function executeClearBorders() {{
+                let range = luckysheet.getRange();
+                if (!range || range.length === 0) return;
+                let r_start = range[0].row[0];
+                let r_end = range[0].row[1];
+                let c_start = range[0].column[0];
+                let c_end = range[0].column[1];
+
+                luckysheet.setCellFormat(r_start, c_start, 'bd', {{
+                    borderType: 'border-none'
+                }}, {{
+                    range: [{{ row: [r_start, r_end], column: [c_start, c_end] }}]
+                }});
+            }}
+
+            function executeAutoSum() {{
+                let range = luckysheet.getRange();
+                if (!range || range.length === 0) return;
+                let r_start = range[0].row[0];
+                let r_end = range[0].row[1];
+                let c_start = range[0].column[0];
+                let c_end = range[0].column[1];
+
+                for (let c = c_start; c <= c_end; c++) {{
+                    let colLetter = String.fromCharCode(65 + c);
+                    let autoSum = '=SUM(' + colLetter + '2:' + colLetter + r_end + ')';
+                    luckysheet.setCellValue(r_end + 1, c, {{ f: autoSum }});
+                }}
+                luckysheet.refresh();
+            }}
+
+            // Attach Direct Click Handlers
+            $('#btn_fill_down').on('click', executeFillDown);
+            $('#btn_all_borders').on('click', executeAllBorders);
+            $('#btn_clear_borders').on('click', executeClearBorders);
+            $('#btn_autosum').on('click', executeAutoSum);
+
+            // Global Keystroke Listener for Hotkeys
+            let keySeq = [];
+            let keyTimer = null;
+
+            window.addEventListener('keydown', function(e) {{
+                // 1. Ctrl + D
                 if ((e.ctrlKey || e.metaKey) && (e.key === 'd' || e.key === 'D' || e.keyCode === 68)) {{
                     e.preventDefault();
                     e.stopPropagation();
-
-                    if (r_start === r_end && r_start > 0) {{
-                        for (let c = c_start; c <= c_end; c++) {{
-                            let topCell = luckysheet.getCellValue(r_start - 1, c, {{ type: 'all' }});
-                            if (topCell) {{
-                                if (topCell.f) {{
-                                    luckysheet.setCellValue(r_start, c, {{ f: shiftFormulaRows(topCell.f, 1) }});
-                                }} else {{
-                                    luckysheet.setCellValue(r_start, c, topCell.v !== undefined ? topCell.v : topCell);
-                                }}
-                            }}
-                        }}
-                    }} else if (r_end > r_start) {{
-                        for (let c = c_start; c <= c_end; c++) {{
-                            let topCell = luckysheet.getCellValue(r_start, c, {{ type: 'all' }});
-                            if (topCell) {{
-                                for (let r = r_start + 1; r <= r_end; r++) {{
-                                    let delta = r - r_start;
-                                    if (topCell.f) {{
-                                        luckysheet.setCellValue(r, c, {{ f: shiftFormulaRows(topCell.f, delta) }});
-                                    }} else {{
-                                        luckysheet.setCellValue(r, c, topCell.v !== undefined ? topCell.v : topCell);
-                                    }}
-                                }}
-                            }}
-                        }}
-                    }}
-                    luckysheet.refresh();
+                    executeFillDown();
                     return false;
                 }}
 
-                // 2. CTRL + R: Fill Right
-                if ((e.ctrlKey || e.metaKey) && (e.key === 'r' || e.key === 'R' || e.keyCode === 82)) {{
-                    e.preventDefault();
-                    e.stopPropagation();
-
-                    for (let r = r_start; r <= r_end; r++) {{
-                        let leftCell = luckysheet.getCellValue(r, c_start, {{ type: 'all' }});
-                        if (leftCell) {{
-                            for (let c = c_start + 1; c <= c_end; c++) {{
-                                let delta = c - c_start;
-                                if (leftCell.f) {{
-                                    luckysheet.setCellValue(r, c, {{ f: shiftFormulaCols(leftCell.f, delta) }});
-                                }} else {{
-                                    luckysheet.setCellValue(r, c, leftCell.v !== undefined ? leftCell.v : leftCell);
-                                }}
-                            }}
-                        }}
-                    }}
-                    luckysheet.refresh();
-                    return false;
-                }}
-
-                // 3. ALT + = : AutoSum
+                // 2. Alt + =
                 if (e.altKey && (e.key === '=' || e.key === '+' || e.keyCode === 187)) {{
                     e.preventDefault();
                     e.stopPropagation();
-
-                    for (let c = c_start; c <= c_end; c++) {{
-                        let colLetter = String.fromCharCode(65 + c);
-                        let autoSum = '=SUM(' + colLetter + '2:' + colLetter + r_end + ')';
-                        luckysheet.setCellValue(r_end + 1, c, {{ f: autoSum }});
-                    }}
-                    luckysheet.refresh();
+                    executeAutoSum();
                     return false;
                 }}
 
-                // 4. ALT Sequences: Alt+H+B+A (All Borders) & Alt+H+B+N (Clear Borders)
+                // 3. Alt Sequence: Alt -> H -> B -> A
                 if (e.altKey) {{
-                    keySequence = ['ALT'];
+                    keySeq = ['ALT'];
                     clearTimeout(keyTimer);
-                    keyTimer = setTimeout(() => {{ keySequence = []; }}, 2500);
-                }} else if (keySequence.length > 0) {{
-                    keySequence.push(e.key.toUpperCase());
-                    let seq = keySequence.join('');
-
-                    if (seq.includes('ALTHBA')) {{
+                    keyTimer = setTimeout(() => {{ keySeq = []; }}, 2500);
+                }} else if (keySeq.length > 0) {{
+                    keySeq.push(e.key.toUpperCase());
+                    let seqStr = keySeq.join('');
+                    if (seqStr.includes('ALTHBA')) {{
                         e.preventDefault();
                         e.stopPropagation();
-                        luckysheet.setCellFormat(r_start, c_start, 'bd', {{
-                            borderType: 'border-all',
-                            style: '1',
-                            color: '#000000'
-                        }}, {{
-                            range: [{{ row: [r_start, r_end], column: [c_start, c_end] }}]
-                        }});
-                        keySequence = [];
+                        executeAllBorders();
+                        keySeq = [];
                         return false;
                     }}
-
-                    if (seq.includes('ALTHBN')) {{
+                    if (seqStr.includes('ALTHBN')) {{
                         e.preventDefault();
                         e.stopPropagation();
-                        luckysheet.setCellFormat(r_start, c_start, 'bd', {{
-                            borderType: 'border-none'
-                        }}, {{
-                            range: [{{ row: [r_start, r_end], column: [c_start, c_end] }}]
-                        }});
-                        keySequence = [];
+                        executeClearBorders();
+                        keySeq = [];
                         return false;
                     }}
                 }}
